@@ -82,6 +82,7 @@ class Proj:
 	var roll := 0.0
 	var grav := 0.0
 	var splash := -1.0       # splash damage override (<0 = the kind's default)
+	var size := 1.0          # visual half width (a thrown earth slab)
 	var water := 0.0         # water this projectile carries: it lands on the ground as a puddle where the projectile ends
 	var shooter: Bot = null
 
@@ -255,6 +256,8 @@ func _build_level() -> void:
 		if absf(pc.x) > 155.0 or absf(pc.y) > 155.0 or pc.distance_to(temple) < 55.0 or terrain.water_possible(pc.x, pc.y):
 			continue
 		if pc.distance_to(Vector2(0.0, 60.0)) < 26.0 or pc.distance_to(Vector2(0.0, -60.0)) < 26.0:
+			continue
+		if pc.distance_to(Vector2(52.0, -8.0)) < 26.0:       # the practice hill beside the meadow stays a hill
 			continue
 		var pok := true
 		for q in pond_spots:
@@ -782,7 +785,11 @@ func grab_wall(near: Vector3) -> bool:
 	var b2: Vector2 = w2["b"]
 	terrain.release_ridge(a2.x, a2.y, b2.x, b2.y, C.WALL_W_TOP + C.WALL_W_FLANK + 0.5)
 	walls.remove_at(best)
-	held = {"c": near, "f": Vector2(0.0, -1.0), "hp": C.HELD_HP, "half_w": C.HELD_HALF_WIDTH}
+	var wall_hw: float = float(w2.get("half_w", C.WALL_HALF_WIDTH))
+	var wall_h: float = float(w2.get("h", C.WALL_HEIGHT))
+	var shrink := minf(1.0, minf(C.HELD_MAX_HALF_WIDTH / maxf(wall_hw, 0.1), C.HELD_MAX_HEIGHT / maxf(wall_h, 0.1)))
+	held = {"c": near, "f": Vector2(0.0, -1.0), "hp": C.HELD_HP, "half_w": wall_hw * shrink, "h": wall_h * shrink,
+			"wall_half_w": wall_hw, "wall_h": wall_h}      # a small copy with the wall's proportions; it remembers the real wall
 	events.append({"type": "wall_grab", "pos": Vector3((a2.x + b2.x) * 0.5, terrain.height_at((a2.x + b2.x) * 0.5, (a2.y + b2.y) * 0.5), (a2.y + b2.y) * 0.5),
 			"radius": C.WALL_HALF_WIDTH})
 	return true
@@ -792,10 +799,27 @@ func grab_wall(near: Vector3) -> bool:
 func plant_wall(origin: Vector3, fwd: Vector3) -> bool:
 	if held.is_empty():
 		return false
-	var k := clampf(float(held["hp"]) / C.HELD_HP, 0.25, 1.0)
+	var half_w: float = held["wall_half_w"]
+	var height: float = held["wall_h"]
 	held = {}
 	var f := Vector2(fwd.x, fwd.z).normalized()
-	earth_wall_at(Vector2(origin.x, origin.z) + f * C.WALL_DIST, f, lerpf(3.0, C.WALL_HALF_WIDTH, k), lerpf(3.2, C.WALL_HEIGHT, k))
+	earth_wall_at(Vector2(origin.x, origin.z) + f * C.WALL_DIST, f, half_w, height)      # the same wall comes back
+	return true
+
+
+# Throw the carried slab where you look. It flies, and breaks on whatever it hits (see _update_projectiles).
+func throw_held(origin: Vector3, look: Vector3) -> bool:
+	if held.is_empty():
+		return false
+	var half_w: float = held["half_w"]
+	var hr: float = clampf(float(held["hp"]) / C.HELD_HP, 0.0, 1.0)
+	var p := spawn_proj("slab", "player", origin + look * 2.2 + Vector3(0.0, -0.3, 0.0), look * C.SLAB_SPEED + Vector3(0.0, 2.0, 0.0),
+			C.SLAB_LIFE, clampf(half_w * 0.4, 1.0, 2.4), C.SLAB_DAMAGE * (0.35 + 0.65 * hr), 18.0, false)
+	p.grav = C.SLAB_GRAVITY
+	p.size = half_w
+	p.splash = C.SLAB_SPLASH_DAMAGE * (0.35 + 0.65 * hr)
+	held = {}
+	events.append({"type": "slab_throw", "pos": p.pos, "dir": look})
 	return true
 
 
@@ -822,7 +846,7 @@ func _held_blocks(p: Proj) -> bool:
 	var lat := rel.x * (-f.y) + rel.z * f.x
 	if absf(along) > 0.6 + p.radius or absf(lat) > float(held["half_w"]) + p.radius:
 		return false
-	if rel.y < -0.4 or rel.y > C.HELD_HEIGHT + 0.2:
+	if rel.y < -0.4 or rel.y > float(held["h"]) + 0.2:
 		return false
 	held["hp"] = float(held["hp"]) - p.damage
 	events.append({"type": "held_hit", "pos": p.pos})
@@ -967,7 +991,7 @@ func _step_job(j: Dictionary, dt: float) -> bool:    # true when finished
 			if float(j["t"]) >= float(j["dur"]):
 				if bool(j.get("pin", false)):
 					terrain.pin_ridge(a.x, a.y, b.x, b.y, float(j["w_top"]) + float(j["w_flank"]), 0.8)
-					walls.append({"a": a, "b": b})
+					walls.append({"a": a, "b": b, "half_w": (b - a).length() * 0.5, "h": float(j["ya1"]) - float(j["ya0"])})
 				return true
 			return false
 		"wave":
@@ -1262,11 +1286,15 @@ func _terrain_impact(p: Proj) -> void:
 		"boulder":
 			crater(surf, C.BOULDER_CRATER_RADIUS, C.BOULDER_CRATER_DEPTH)
 			_rock_splash(p, surf)
+		"slab":
+			crater(surf, C.ROCK_CRATER_RADIUS * 1.6, C.ROCK_CRATER_DEPTH)
+			_rock_splash(p, surf)
+			events.append({"type": "slab_break", "pos": surf, "size": p.size})
 
 
 func _rock_splash(p: Proj, at: Vector3) -> void:
 	var big := p.kind == "boulder"
-	var radius: float = C.BOULDER_SPLASH if big else C.ROCK_SPLASH
+	var radius: float = C.SLAB_SPLASH if p.kind == "slab" else (C.BOULDER_SPLASH if big else C.ROCK_SPLASH)
 	var dmg: float = C.BOULDER_SPLASH_DAMAGE if big else C.ROCK_SPLASH_DAMAGE
 	if p.splash >= 0.0:
 		dmg = p.splash
@@ -1283,7 +1311,47 @@ func _rock_splash(p: Proj, at: Vector3) -> void:
 	events.append({"type": "rock_burst", "pos": at, "radius": radius})
 
 
+# Opposite-side projectiles that touch (swept over the last tick, so fast bullets cannot slip through each other) destroy
+# each other; the tougher one survives (C.PROJ_TOUGHNESS, kinds not listed are ultimates and are ignored). Losers get life 0
+# and are removed by the loop that follows. Cheap: floats only, a side check first, usually a handful of projectiles.
+func _clash_projectiles(dt: float) -> void:
+	var n := projectiles.size()
+	if n < 2:
+		return
+	for i in range(n - 1, 0, -1):
+		var a := projectiles[i]
+		if a.life <= 0.0:
+			continue
+		var ta: int = C.PROJ_TOUGHNESS.get(a.kind, 0)
+		if ta <= 0:
+			continue
+		for j in range(i - 1, -1, -1):
+			var b := projectiles[j]
+			if b.team == a.team or b.life <= 0.0:
+				continue
+			var tb: int = C.PROJ_TOUGHNESS.get(b.kind, 0)
+			if tb <= 0:
+				continue
+			var r := a.pos - b.pos
+			var v := a.vel - b.vel
+			var vv := v.length_squared()
+			var s := 0.0
+			if vv > 1e-6:
+				s = clampf(-r.dot(v) / vv, -dt, 0.0)
+			var reach := a.radius + b.radius + C.CLASH_PAD
+			if (r + v * s).length_squared() > reach * reach:
+				continue
+			events.append({"type": "proj_clash", "pos": (a.pos + b.pos) * 0.5, "kind": a.kind if ta >= tb else b.kind})
+			if ta <= tb:
+				a.life = 0.0
+			if tb <= ta:
+				b.life = 0.0
+			if a.life <= 0.0:
+				break
+
+
 func _update_projectiles(dt: float, player) -> void:
+	_clash_projectiles(dt)
 	var i := projectiles.size() - 1
 	while i >= 0:
 		var p := projectiles[i]
@@ -1293,14 +1361,14 @@ func _update_projectiles(dt: float, player) -> void:
 			if p.grav > 0.0:
 				p.vel.y -= p.grav * dt
 			p.pos += p.vel * dt
-			if (p.kind == "rock" or p.kind == "boulder" or p.kind == "bolt") and p.pos.y < terrain.surface_at(p.pos.x, p.pos.z) and terrain.water_depth_at(p.pos.x, p.pos.z) > 0.4:
+			if (p.kind == "rock" or p.kind == "boulder" or p.kind == "slab" or p.kind == "bolt") and p.pos.y < terrain.surface_at(p.pos.x, p.pos.z) and terrain.water_depth_at(p.pos.x, p.pos.z) > 0.4:
 				remove = true
 				events.append({"type": "splash", "pos": Vector3(p.pos.x, terrain.surface_at(p.pos.x, p.pos.z), p.pos.z), "big": p.kind == "boulder"})
 			elif inside_solid(p.pos):
 				remove = true
 				events.append({"type": "proj_hit", "pos": p.pos, "kind": p.kind})
 				var iced := break_ice_walls_near(p.pos, 0.4 + p.radius) > 0     # an ice wall takes the hit and shatters
-				if not iced and (p.team == "player" or p.kind == "rock" or p.kind == "boulder"):
+				if not iced and (p.team == "player" or p.kind == "rock" or p.kind == "boulder" or p.kind == "slab"):
 					_terrain_impact(p)
 			elif p.team == "player":
 				for b in bots:
@@ -1316,6 +1384,8 @@ func _update_projectiles(dt: float, player) -> void:
 						events.append({"type": "proj_hit", "pos": p.pos, "kind": p.kind})
 						if p.kind == "rock" or p.kind == "boulder":
 							_rock_splash(p, p.pos)
+						if p.kind == "slab":                          # breaks on the enemy: damage around it, rubble
+							_terrain_impact(p)
 						if p.kind == "boulder":
 							crater(Vector3(p.pos.x, terrain.height_at(p.pos.x, p.pos.z), p.pos.z), C.BOULDER_CRATER_RADIUS, C.BOULDER_CRATER_DEPTH)
 						if not p.pierce:
@@ -1498,6 +1568,19 @@ func ice_wall_near(at: Vector3, radius: float) -> int:
 	return best
 
 
+# How far along the ray from `from` the crosshair is on an enemy: the first one on the line, or `fallback`.
+func _aim_distance(from: Vector3, dir: Vector3, fallback: float) -> float:
+	var best := fallback                                   # (the ground is ignored: the wall itself is ground, and would block the ray)
+	for b in bots:
+		if not b.alive:
+			continue
+		var rel := bot_center(b) - from
+		var along := rel.dot(dir)
+		if along > 1.0 and along < best and (rel - dir * along).length() < C.BOT_RADIUS + 0.6:
+			best = along
+	return best
+
+
 # The wall throws one ice disc along `dir`, from the face that looks the way it flies. The wall shrinks with every disc and
 # the last one uses it up.
 func ice_discs(wall: int, from: Vector3, dir: Vector3, team: String, dmg: float, shooter: Bot = null) -> int:
@@ -1513,9 +1596,13 @@ func ice_discs(wall: int, from: Vector3, dir: Vector3, team: String, dmg: float,
 	var out := float(w["w"]) + 0.9
 	var along := clampf((Vector2(from.x, from.z) - mid).dot(tang), -ab.length() * 0.4, ab.length() * 0.4)   # cut from the part of the wall nearest you
 	var xy := mid + tang * along + nrm * out
-	var y: float = maxf(terrain.height_at(xy.x, xy.y), terrain.surface_at(xy.x, xy.y)) + 1.5
-	spawn_proj("disc", team, Vector3(xy.x, y, xy.y), dir.normalized() * C.DISC_SPEED, C.DISC_LIFE, C.DISC_RADIUS,
+	var wall_at := mid + tang * along
+	var y: float = maxf(terrain.height_at(wall_at.x, wall_at.y), terrain.height_at(xy.x, xy.y)) + 1.2   # it rises over the top of the wall, in plain sight
+	var start := Vector3(xy.x, y, xy.y)
+	var heading := ((from + dir.normalized() * _aim_distance(from, dir.normalized(), 60.0)) - start).normalized()   # towards where you aim
+	spawn_proj("disc", team, start, heading * C.DISC_SPEED, C.DISC_LIFE, C.DISC_RADIUS,
 			dmg, C.DISC_KNOCKBACK, true, 0.0, shooter)
+	w["used"] = true                                     # from the first disc on, hits no longer break it
 	var left: int = C.DISC_SHOTS - int(w.get("shots", 0))
 	w["shots"] = int(w.get("shots", 0)) + 1
 	events.append({"type": "ice_discs", "pos": Vector3(xy.x, y, xy.y), "dir": dir})
@@ -1539,7 +1626,7 @@ func _register_ice_wall(j: Dictionary) -> void:
 	var iz1 := int(ceil((maxf(a.y, b.y) + reach + TerrainScript.HALF) / TerrainScript.CELL))
 	terrain.tint_wall_cells(j["orig"], ix0, iz0, ix1, iz1)
 	ice_walls.append({"a": a, "b": b, "orig": j["orig"], "ix0": ix0, "ix1": ix1, "iz0": iz0, "iz1": iz1,
-			"t": C.ICE_WALL_LIFE, "w": float(j["w_top"]) + float(j["w_flank"])})
+			"t": C.ICE_WALL_LIFE, "w": float(j["w_top"]) + float(j["w_flank"]), "hp": C.ICE_WALL_HITS})
 
 
 func _update_ice_walls(dt: float) -> void:
@@ -1561,7 +1648,8 @@ func _shatter_ice_wall(k: int, struck: bool) -> void:
 	ice_walls.remove_at(k)
 
 
-# Anything that lands within `radius` of an ice wall breaks it (one hit). Returns how many walls shattered.
+# Anything that lands within `radius` of an ice wall hits it: two hits break it, unless it has already thrown a disc (then
+# it soaks the hits and stays until it is used up or melts). Returns how many walls took the hit.
 func break_ice_walls_near(center: Vector3, radius: float) -> int:
 	if ice_walls.is_empty():
 		return 0
@@ -1574,8 +1662,15 @@ func break_ice_walls_near(center: Vector3, radius: float) -> int:
 		var ab := b - a
 		var t := clampf((q - a).dot(ab) / maxf(ab.length_squared(), 0.0001), 0.0, 1.0)
 		if (q - (a + ab * t)).length() <= float(ice_walls[k]["w"]) + radius:
-			_shatter_ice_wall(k, true)
-			n += 1
+			if bool(ice_walls[k].get("used", false)):
+				n += 1                                   # a wall that is being used for discs soaks hits: it stays until it is used up
+			else:
+				ice_walls[k]["hp"] = int(ice_walls[k].get("hp", 1)) - 1
+				if int(ice_walls[k]["hp"]) <= 0:
+					_shatter_ice_wall(k, true)
+				else:
+					events.append({"type": "ice_crack", "pos": center})
+				n += 1
 		k -= 1
 	return n
 
@@ -1768,6 +1863,12 @@ func _duel_sides() -> Array:
 				if ok and rough <= float(limit):
 					cands.append(q)
 			gx += 20.0
+	var wet_cands: Array[Vector2] = []                       # start pads with water close by: a waterbender must be able to get going
+	for q in cands:
+		if terrain.nearest_water(q.x, q.y, 28.0) != null:
+			wet_cands.append(q)
+	if wet_cands.size() >= 4:
+		cands = wet_cands
 	var pairs: Array = []
 	for i in range(cands.size()):
 		for j in range(i + 1, cands.size()):

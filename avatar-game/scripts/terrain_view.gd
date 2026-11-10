@@ -13,6 +13,8 @@ var _mat: StandardMaterial3D
 var _cn := FastNoiseLite.new()
 var _water_chunks: Array = []       # MeshInstance3D per chunk (mesh only where water touches the chunk)
 var _water_mat: ShaderMaterial
+var _chunk_indices := PackedInt32Array()
+const REBUILD_MSEC := 2.5            # a frame spends at most about this long rebuilding edited chunks (one always goes)
 
 const WATER_SRC := "
 shader_type spatial;
@@ -75,13 +77,22 @@ func setup(t) -> void:
 	terrain.take_dirty()
 
 
+# Chunks further than `metres` from the camera are not drawn (the fog hides the edge). 0 = draw everything.
+func set_view_range(metres: float) -> void:
+	for mi in _chunks:
+		(mi as MeshInstance3D).visibility_range_end = metres
+	for wi in _water_chunks:
+		(wi as MeshInstance3D).visibility_range_end = metres
+
+
 # Rebuild up to `budget` queued chunks. Returns how many are still waiting.
 func update(budget: int = 3) -> int:
 	for k in terrain.take_dirty():
 		_queue[k] = true
 	var n := 0
+	var t0 := Time.get_ticks_usec()
 	for k in _queue.keys():
-		if n >= budget:
+		if n >= budget or (n > 0 and budget < 50 and float(Time.get_ticks_usec() - t0) > REBUILD_MSEC * 1000.0):
 			break
 		_build_chunk(int(k) % TerrainScript.NCHUNK, int(k) / TerrainScript.NCHUNK)
 		_queue.erase(k)
@@ -160,28 +171,30 @@ func _build_chunk(cx: int, cz: int) -> void:
 			verts[k] = Vector3(x, y, z)
 			normals[k] = nrm
 			colors[k] = _color(x, z, y, nrm.y, gi)
-	var indices := PackedInt32Array()
-	indices.resize(n * n * 6)
-	var q := 0
-	for j in range(n):
-		for i in range(n):
-			var i0 := j * w + i
-			var i1 := i0 + 1
-			var i2 := i0 + w
-			var i3 := i2 + 1
-			indices[q] = i0
-			indices[q + 1] = i1
-			indices[q + 2] = i2
-			indices[q + 3] = i1
-			indices[q + 4] = i3
-			indices[q + 5] = i2
-			q += 6
+	if _chunk_indices.is_empty():                       # the same for every chunk: built once
+		var idx := PackedInt32Array()
+		idx.resize(n * n * 6)
+		var q := 0
+		for j in range(n):
+			for i in range(n):
+				var i0 := j * w + i
+				var i1 := i0 + 1
+				var i2 := i0 + w
+				var i3 := i2 + 1
+				idx[q] = i0
+				idx[q + 1] = i1
+				idx[q + 2] = i2
+				idx[q + 3] = i1
+				idx[q + 4] = i3
+				idx[q + 5] = i2
+				q += 6
+		_chunk_indices = idx
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_COLOR] = colors
-	arrays[Mesh.ARRAY_INDEX] = indices
+	arrays[Mesh.ARRAY_INDEX] = _chunk_indices
 	var mi: MeshInstance3D = _chunks[cz * TerrainScript.NCHUNK + cx]
 	var mesh := mi.mesh as ArrayMesh
 	mesh.clear_surfaces()

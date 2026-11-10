@@ -116,6 +116,8 @@ var _whip_t := [-1.0, -1.0]        # seconds into each flick (< 0 = idle)
 var _whip_side := [-1.0, 1.0]
 var _shard_mesh: ArrayMesh
 var _shard_mat: StandardMaterial3D
+var _disc_mat: StandardMaterial3D
+var bot_range := 0.0                # bots further than this from the camera are neither drawn nor animated (0 = all)
 var _beams: Array = []
 var _tides: Array = []
 var _ice_debris_mats: Array = []
@@ -535,8 +537,10 @@ func _rig_event(ev: Dictionary) -> void:
 			ar.trigger("slam", 0.7)
 		"octo_grab":
 			ar.trigger("thrust", 0.3)
-		"octo_throw":
+		"octo_throw", "slab_throw":
 			ar.trigger("throw", 0.35)
+		"bullet":
+			ar.trigger("thrust", 0.18)
 		"hurt":
 			ar.trigger("hurt", 0.25)
 		"melee":
@@ -584,6 +588,16 @@ func on_sim_event(ev: Dictionary, feet: Vector3) -> void:
 			var ds: Vector3 = ev["dir"]
 			ring(os + ds * 1.2, ds, 1.0, 0.3, 0.0, ICE, 0.2)
 			debris(os + ds * 1.2, 8, 6.0, 0.1, 0.6, 1.0, true)
+		"propel":
+			var pp: Vector3 = ev["pos"]
+			ring(pp + Vector3(0, 0.1, 0), Vector3.UP, 4.5, 0.5, 0.0, WATER, 0.5, Vector3.INF, 0.6)
+			ring(pp + Vector3(0, 0.6, 0), Vector3.UP, 3.0, 0.45, 0.08, ICE, 0.4)
+			debris(pp, 16, 11.0, 0.14, 0.7, 1.8, true)                   # the jet of water that throws you
+		"bullet":
+			var bd: Vector3 = ev["dir"]
+			ring(feet + Vector3(0, 1.4, 0) + bd * 1.1, bd, 0.5, 0.15, 0.0, WATER, 0.1, Vector3.INF, 0.6)
+		"slab_throw":
+			pass
 		"disc_throw":
 			var dd: Vector3 = ev["dir"]
 			ring(feet + Vector3(0, 1.5, 0) + dd * 1.4, dd, 1.2, 0.3, 0.0, ICE, 0.25)
@@ -833,12 +847,18 @@ func on_world_event(ev: Dictionary) -> void:
 			ring(sp + Vector3(0, 0.05, 0), Vector3.UP, 2.6 if big else 1.4, 0.4, 0.08, Color(0.9, 0.97, 1.0), 0.4)
 			if big:
 				debris(sp, 10, 7.0, 0.16, 1.2)
+		"proj_clash":
+			ring(ev["pos"], Vector3.UP, 1.0, 0.2, 0.0, Color(1, 1, 1), 0.2)
+			debris(ev["pos"], 4, 5.0, 0.1, 0.5, 1.0)
 		"proj_hit":
 			var kind: String = ev["kind"]
 			if kind == "shard":
 				debris(ev["pos"], 5, 5.0, 0.1, 0.4, 1.0, true)
 			elif kind == "disc":
 				debris(ev["pos"], 9, 7.0, 0.12, 0.6, 1.0, true)
+			elif kind == "wbullet":
+				ring(ev["pos"], Vector3.UP, 1.0, 0.2, 0.0, WATER, 0.1, Vector3.INF, 0.6)
+				debris(ev["pos"], 3, 4.0, 0.08, 0.3, 1.0, true)
 			var col2 := BOLT if kind == "bolt" else (EARTH if (kind == "rock" or kind == "boulder") else AIR)
 			ring(ev["pos"], Vector3.UP, 1.1, 0.25, 0.0, col2, 0.2)
 			if kind == "rock":
@@ -897,6 +917,16 @@ func on_world_event(ev: Dictionary) -> void:
 		"ice_discs":
 			var idp: Vector3 = ev["pos"]
 			debris(idp, 12, 7.0, 0.14, C.ICE_WALL_HALF_WIDTH * 0.5, 1.0, true)
+			ring(idp, Vector3.UP, 2.4, 0.3, 0.0, ICE, 0.4)
+		"ice_crack":
+			var icp: Vector3 = ev["pos"]
+			debris(icp, 8, 6.0, 0.12, 0.8, 1.0, true)
+			floating_text(icp + Vector3(0, 1.5, 0), "CRACKED", ICE)
+		"slab_break":
+			var sbp: Vector3 = ev["pos"]
+			var sz: float = float(ev["size"])
+			ring(sbp + Vector3(0, 0.15, 0), Vector3.UP, C.SLAB_SPLASH * 1.3, 0.5, 0.0, DUST, 0.6, Vector3.INF, 0.6)
+			debris(sbp, int(clampf(sz * 5.0, 8.0, 26.0)), 10.0, 0.4, sz * 0.5)
 		"ice_shatter":
 			var sh: Vector3 = ev["pos"]
 			ring(sh + Vector3(0, 0.3, 0), Vector3.UP, C.ICE_WALL_HALF_WIDTH * 1.2, 0.4, 0.0, ICE, 0.4, Vector3.INF, 0.7)
@@ -1164,8 +1194,9 @@ func update(dt: float, feet: Vector3) -> void:
 		var hc: Vector3 = world.held["c"]
 		var hf: Vector2 = world.held["f"]
 		var half_w: float = world.held["half_w"]
-		held_node.look_at_from_position(hc + Vector3(0, C.HELD_HEIGHT * 0.5, 0), hc + Vector3(hf.x, C.HELD_HEIGHT * 0.5, hf.y), Vector3.UP)
-		held_node.scale = Vector3(half_w * 2.0, C.HELD_HEIGHT, 0.9)
+		var held_h: float = world.held["h"]
+		held_node.look_at_from_position(hc + Vector3(0, held_h * 0.5, 0), hc + Vector3(hf.x, held_h * 0.5, hf.y), Vector3.UP)
+		held_node.scale = Vector3(half_w * 2.0, held_h, 0.9)
 		var hr: float = clampf(float(world.held["hp"]) / C.HELD_HP, 0.0, 1.0)
 		_held_mat.albedo_color = Color(0.30, 0.25, 0.20).lerp(Color(0.52, 0.45, 0.36), hr)
 
@@ -1267,13 +1298,35 @@ func _make_proj_node(p) -> Node3D:
 			var sc := _inst(_shard_mesh, _shard_mat)        # a sharp four-sided ice spike, point first
 			sc.scale = Vector3(1.0, 1.0, 1.25)
 			n.add_child(sc)
-		"disc":                                           # a spinning saucer of ice
-			var dsc := _inst(_sphere_mesh, _shard_mat)
-			dsc.scale = Vector3(1.0, 0.1, 1.0) * 0.95
-			n.add_child(dsc)
-			var rim := _inst(_sphere_mesh, _flat(Color(0.7, 0.9, 1.0), 0.35))
-			rim.scale = Vector3(1.25, 0.05, 1.25) * 0.95
-			n.add_child(rim)
+		"disc":                                           # a big spinning saucer of ice with a glow and a streak behind it
+			var dsc := _inst(_sphere_mesh, _disc_mat)
+			dsc.scale = Vector3(1.9, 0.16, 1.9)
+			n.add_child(dsc)                              # child 0: the part that spins
+			var rim := _inst(_sphere_mesh, _flat(Color(0.85, 0.97, 1.0), 0.8))
+			rim.scale = Vector3(2.3, 0.07, 2.3)
+			dsc.add_child(rim)
+			var halo := _inst(_sphere_mesh, _flat(Color(0.5, 0.85, 1.0), 0.28))
+			halo.scale = Vector3(3.2, 0.9, 3.2)
+			n.add_child(halo)
+			var streak := _inst(_sphere_mesh, _flat(Color(0.75, 0.93, 1.0), 0.4))
+			streak.scale = Vector3(0.7, 0.2, 4.5)
+			streak.position = Vector3(0.0, 0.0, 3.4)
+			n.add_child(streak)
+		"wbullet":                                        # a small fast bead of water
+			var bead := _inst(_sphere_mesh, _flat(Color(0.35, 0.7, 1.0), 0.95))
+			bead.scale = Vector3(0.22, 0.22, 0.7)
+			n.add_child(bead)
+			var bglow := _inst(_sphere_mesh, _flat(Color(0.6, 0.85, 1.0), 0.3))
+			bglow.scale = Vector3(0.5, 0.5, 1.4)
+			n.add_child(bglow)
+		"slab":                                           # the earth wall, thrown
+			var sl := MeshInstance3D.new()
+			var slm := BoxMesh.new()
+			slm.size = Vector3(float(p.size) * 2.0, 1.45, 0.9)
+			sl.mesh = slm
+			sl.material_override = _held_mat
+			sl.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			n.add_child(sl)
 		"rock", "boulder":
 			var rm := StandardMaterial3D.new()
 			rm.albedo_color = Color(0.45, 0.36, 0.27)
@@ -1315,7 +1368,9 @@ func _sync_projectiles() -> void:
 		if String(p.kind) == "slice":
 			n.rotate_object_local(Vector3.FORWARD, p.roll)
 		elif String(p.kind) == "disc":
-			n.rotate_object_local(Vector3.UP, _time * 30.0)
+			(n.get_child(0) as Node3D).rotation.y = _time * 25.0
+		elif String(p.kind) == "slab":
+			n.rotate_object_local(Vector3.RIGHT, _time * 5.0)
 		elif String(p.kind) == "punch":
 			n.scale = Vector3.ONE * (1.0 + 0.12 * sin(_time * 40.0))
 		elif String(p.kind) == "rock" or String(p.kind) == "boulder":
@@ -1374,8 +1429,9 @@ func update_bots() -> void:
 	for b in world.bots:
 		var v: Dictionary = _bot_views[b]
 		var root: Node3D = v["root"]
-		root.visible = b.alive
-		if not b.alive:
+		var far_away: bool = bot_range > 0.0 and cam.global_position.distance_to(b.pos) > bot_range and not b.boss
+		root.visible = b.alive and not far_away         # too far to see: not drawn and not animated
+		if not b.alive or far_away:
 			continue
 		root.position = b.pos
 		root.rotation.y = b.yaw
@@ -1498,6 +1554,9 @@ func _build_shard() -> void:
 		st.add_vertex(b)
 	st.generate_normals()
 	_shard_mesh = st.commit()
+	_disc_mat = StandardMaterial3D.new()                 # a bright glowing ice disc: easy to see against the ground and the sky
+	_disc_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_disc_mat.albedo_color = Color(0.82, 0.96, 1.0)
 	_shard_mat = StandardMaterial3D.new()
 	_shard_mat.albedo_color = Color(0.85, 0.96, 1.0)
 	_shard_mat.roughness = 0.1

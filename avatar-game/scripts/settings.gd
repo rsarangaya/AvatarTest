@@ -41,6 +41,7 @@ const BASE_SENS := 0.0022
 static var bindings := {}
 static var mouse_sens := 1.0            # multiplier on BASE_SENS
 static var fov := BASE_FOV
+static var quality := 1                 # graphics: 0 low, 1 medium, 2 high (see profile())
 static var debug_enabled := false
 static var persist := true              # tests turn this off so they never touch the player's saved settings
 static var _loaded := false
@@ -73,6 +74,7 @@ static func ensure_loaded() -> void:
 	resolve_conflicts()
 	mouse_sens = clampf(float(cf.get_value("mouse", "sensitivity", 1.0)), 0.2, 3.0)
 	fov = clampf(float(cf.get_value("view", "fov", BASE_FOV)), 70.0, 110.0)
+	quality = clampi(int(cf.get_value("view", "quality", 1)), 0, 2)
 
 
 # Two actions must never share a key (an old saved file can clash with an action added later). The later action goes
@@ -99,6 +101,7 @@ static func save() -> void:
 		cf.set_value("keys", String(id), int(bindings[id]))
 	cf.set_value("mouse", "sensitivity", mouse_sens)
 	cf.set_value("view", "fov", fov)
+	cf.set_value("view", "quality", quality)
 	cf.save(SAVE_PATH)
 
 
@@ -107,7 +110,23 @@ static func reset_defaults() -> void:
 	_defaults()
 	mouse_sens = 1.0
 	fov = BASE_FOV
+	quality = 1
 	save()
+
+
+# ------------------------------------------------------------------ graphics
+
+const QUALITY_NAMES := ["Low", "Medium", "High"]
+
+# What each graphics level costs and shows. msaa: 0 off, 2 = 2x. shadow_dist 0 = no shadows. terrain_range / bot_range
+# are view distances in metres (0 = unlimited): beyond them the ground and the bots are not drawn at all (fog hides it).
+static func profile() -> Dictionary:
+	match quality:
+		0:
+			return {"msaa": 0, "shadow_dist": 0.0, "shadow_splits": 1, "terrain_range": 230.0, "bot_range": 85.0, "far": 600.0}
+		2:
+			return {"msaa": 2, "shadow_dist": 130.0, "shadow_splits": 4, "terrain_range": 0.0, "bot_range": 0.0, "far": 2200.0}
+	return {"msaa": 0, "shadow_dist": 75.0, "shadow_splits": 1, "terrain_range": 340.0, "bot_range": 140.0, "far": 900.0}
 
 
 # ------------------------------------------------------------------ bindings

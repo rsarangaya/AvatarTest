@@ -4,6 +4,7 @@ extends RefCounted
 ## anything else is shown as written (mouse buttons and so on).
 
 const Settings = preload("res://scripts/settings.gd")
+const C = preload("res://scripts/config.gd")
 
 const COMMON := {
 	"title": "MOVEMENT (everyone)",
@@ -49,9 +50,9 @@ const NATIONS := {
 				[["@ability_q"], "EARTH SKATE on / off: stride on rising chunks of earth. Steer with the mouse."],
 				[["@jump", "(held at a tall wall)"], "EARTH ELEVATOR: ride a column of rock up a cliff. Hold forward to lean over the top."],
 				[["@ability_e"], "EARTH WALL: big, permanent, blocks bolts."],
-				[["@ability_g"], "GRAB the nearest wall to carry it as a shield. Press again to plant it."],
+				[["@ability_g"], "GRAB the nearest wall to carry it as a shield, with the wall's own shape. Press again to plant the same wall. While you carry it, LEFT CLICK THROWS it: it flies, then breaks on what it hits and hurts everything around."],
 				[["@ability_v"], "EARTH ARMOR on / off: soaks damage but slows you."],
-				[["@ability_f"], "EARTH PILLAR where you aim: hurts, throws enemies up (they take fall damage). Look at your feet to ride one. Aim at a cliff, wall or the side of a pillar and it grows out sideways instead, so you can chain bridges and stairs. It needs earth: not open water."],
+				[["@ability_f"], "EARTH PILLAR (two charges, each comes back after 7 s) where you aim: hurts, throws enemies up (they take fall damage). Look at your feet to ride one. Aim at a cliff, wall or the side of a pillar and it grows out sideways instead, so you can chain bridges and stairs. It needs earth: not open water."],
 			]},
 			{"title": "Ultimate", "entries": [
 				[["@ultimate"], "EARTH CLAP on the ground: two slabs rise either side of the target and slam together. 8 m or more up: EARTHQUAKE DIVE, land and the ground shakes."],
@@ -71,16 +72,17 @@ const NATIONS := {
 				[["Used water"], "Water you spend falls on the ground as puddles (where a lash lands, where shards end, where the jet hits). Walk to a puddle and gather it again with [@ability_f], or just fight next to it: puddles count as water for free moves. They dry up after a few minutes."],
 			]},
 			{"title": "Moves", "entries": [
-				[["Left click"], "Tap: WATER WHIP, a quick solid lash. Hold: WATER JET, a stream that pushes enemies and bolts back."],
+				[["Left click"], "Tap: WATER WHIP, a quick solid lash. Hold: WATER BULLETS, a quick stream of small fast bullets of water."],
+				[["Space"], "HOLD in or just above water (or over ice) to PROPEL: a jet of water lifts you steadily, a few metres at most, with a little forward drift. Let go, or leave the water, and you fall. Short rest after each use."],
 				[["Right click"], "HEAL yourself over a moment."],
 				[["@ability_z"], "ICE SHARDS: a tight fan of seven pointed spikes. A close fan hits very hard."],
 				[["@ability_q"], "ICE SKATE on / off. Needs water or ice nearby. You glide fast over ice and over open water (no swimming). It ends when no water or ice is left near you. It never freezes anything by itself."],
 				[["@ability_freeze"], "FREEZE on / off. While on, the water around and ahead of you turns to ice as you move (skate over it, or walk on it). Press it again to turn it off and thaw the ice around you back into water."],
-				[["@ability_e"], "ICE WALL: breaks after one hit. Used on an enemy about 6 ft in front of you it FREEZES them solid for 3 seconds. Then, standing close to your wall, press it again to throw an ICE DISC: one spinning disc flies from the wall where you aim and cuts through enemies. A wall gives four discs and shrinks with each one."],
+				[["@ability_e"], "ICE WALL: takes two hits to break. Used on an enemy about 6 ft in front of you it FREEZES them solid for 3 seconds. Then, standing close to your wall, press it again to throw an ICE DISC: one spinning disc flies from the wall where you aim and cuts through enemies. A wall gives four discs and shrinks with each one; once it has thrown a disc, hits no longer break it."],
 			]},
 			{"title": "Ultimate", "entries": [
 				[["@ultimate", "(hold, near water)"], "TIDAL WAVE: pulls the water up into a huge rolling wave. Its size depends on how much water is around you (a puddle is small, a lake or the sea is huge). The water it leaves behind stays where it lands: freeze it with the ice skate and glide over it."],
-				[["@ultimate", "(tap)"], "OCTOPUS FORM for 16 seconds: two long water arms. Left click = left arm, right click = right arm, [@ability_e] = slam both arms down, [@ability_q] = grab an enemy (then press it again to throw them within 3 seconds)."],
+				[["@ultimate", "(tap)"], "OCTOPUS FORM for {octo_time} seconds: two long water arms. Left click = left arm, right click = right arm, [@ability_e] = slam both arms down, [@ability_q] = grab an enemy (then press it again to throw them within 3 seconds)."],
 			]},
 			{"title": "Tips", "entries": [
 				[["Tip"], "Fight at the water's edge: there are ponds all over the map. Or make your own: a tidal wave leaves wading-deep water everywhere it passed, so moves stay free there. Ice melts after 45 seconds."],
@@ -124,7 +126,7 @@ static func _key_text(k: String) -> String:
 
 # Inside a description, [@action] becomes the key that action is bound to.
 static func _text(t: String) -> String:
-	var out := t
+	var out := t.replace("{octo_time}", "%d" % int(C.OCTO_TIME))
 	for a in Settings.ACTIONS:
 		out = out.replace("[@%s]" % a["id"], "[color=#ffd86b][lb]%s[rb][/color]" % Settings.key_name(String(a["id"])))
 	return out

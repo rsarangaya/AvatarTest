@@ -182,6 +182,21 @@ func _initialize() -> void:
 	await wait(0.2)
 	ok(main.captured and not main.overlay.visible, "RESUME closes the pause menu and plays on")
 
+	# graphics quality changes the scene at once
+	Settings.quality = 0
+	await process_frame
+	await process_frame
+	var chunk0 := main.terrain_view._chunks[0] as MeshInstance3D
+	ok(not main.sun.shadow_enabled and chunk0.visibility_range_end > 100.0 and main.fx.bot_range > 0.0, "Low: no shadows, ground and bots stop at a distance")
+	Settings.quality = 2
+	await process_frame
+	await process_frame
+	ok(main.sun.shadow_enabled and chunk0.visibility_range_end == 0.0 and main.fx.bot_range == 0.0 and main.get_viewport().msaa_3d == Viewport.MSAA_2X, "High: shadows, 2x anti-aliasing, everything drawn")
+	Settings.quality = 1
+	await process_frame
+	await process_frame
+	ok(main.sun.shadow_enabled and main.get_viewport().msaa_3d == Viewport.MSAA_DISABLED and chunk0.visibility_range_end > 300.0, "Medium: short shadows, no anti-aliasing, long view")
+
 	# earthbending through the real input path (the nation itself is chosen by the menu: set it directly here)
 	sim.set_nation("earth")
 	await wait(0.3)

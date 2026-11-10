@@ -12,6 +12,7 @@ const Session = preload("res://scripts/session.gd")
 const UI = preload("res://scripts/ui.gd")
 const TutorialView = preload("res://scripts/tutorial_view.gd")
 const OptionsUI = preload("res://scripts/options_ui.gd")
+const HudSlot = preload("res://scripts/hud_slot.gd")
 
 const TICK := 1.0 / C.TICK_RATE
 
@@ -30,6 +31,7 @@ const ROUND_DELAY := 5.0
 var round_label: Label
 var debug_label: Label             # small tag while the hidden debug mode is on (flashes big when it is switched)
 var debug_flash := 0.0
+var pillar_label: Label            # earthbenders: how many pillars are in hand
 var round_t := 0.0                 # seconds until a duel round starts (the fighters are frozen until then)
 var round_msg := ""
 var clock := 0.0
@@ -55,6 +57,8 @@ var element_label: Label
 var chi_text: Label
 var hints_label: Label
 var charge_bar: ProgressBar
+var slot_rows := {}                    # "air" / "earth" / "water" / "octo" -> HBoxContainer of ability indicators
+var slot_nodes := {}                   # the same keys -> Array of HudSlot (order matches _update_slots)
 var hit_marker: Label
 var hurt_flash: ColorRect
 var water_tint: ColorRect
@@ -69,6 +73,7 @@ var env: Environment
 var sky_mat: ProceduralSkyMaterial
 var sun: DirectionalLight3D
 var sky_dark := 0.0                    # 0 = day, 1 = fully darkened
+var _quality_applied := -1
 
 var overlay: Control                   # the pause menu
 var pause_center: CenterContainer
@@ -93,6 +98,7 @@ func _ready() -> void:
 	fx = FxScript.new()
 	add_child(fx)
 	fx.setup(world, sim, cam)
+	_apply_quality()
 	_build_hud()
 	prev_pos = sim.pos
 	_capture(true)
@@ -157,6 +163,21 @@ func _update_ult_sky(dt: float) -> void:
 	env.fog_light_color = SKY_DAY["fog"].lerp(SKY_DARK["fog"], sky_dark)
 	env.ambient_light_energy = lerpf(SKY_DAY["ambient"], SKY_DARK["ambient"], sky_dark)
 	sun.light_energy = lerpf(SKY_DAY["sun"], SKY_DARK["sun"], sky_dark)
+
+
+# Graphics quality (Options): anti-aliasing, shadows and how far the ground and the bots are drawn. Called again
+# whenever the setting changes, also in a running game.
+func _apply_quality() -> void:
+	_quality_applied = Settings.quality
+	var q: Dictionary = Settings.profile()
+	get_viewport().msaa_3d = Viewport.MSAA_2X if int(q["msaa"]) == 2 else Viewport.MSAA_DISABLED
+	sun.shadow_enabled = float(q["shadow_dist"]) > 0.0
+	sun.directional_shadow_max_distance = maxf(float(q["shadow_dist"]), 1.0)
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS if int(q["shadow_splits"]) == 4 \
+			else DirectionalLight3D.SHADOW_ORTHOGONAL
+	cam.far = float(q["far"])
+	terrain_view.set_view_range(float(q["terrain_range"]))
+	fx.bot_range = float(q["bot_range"])
 
 
 func _build_terrain() -> void:
@@ -263,6 +284,15 @@ func _build_hud() -> void:
 	debug_label.visible = false
 	root.add_child(debug_label)
 
+	pillar_label = _make_label(18)
+	pillar_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pillar_label.add_theme_color_override("font_color", Color(0.9, 0.78, 0.55))
+	_anchor(pillar_label, 0.5, 1.0, -200.0, -118.0, 200.0, -94.0)
+	pillar_label.visible = false
+	root.add_child(pillar_label)
+
+	_build_slots(root)
+
 	charge_bar = _make_bar(Color(0.85, 0.97, 1.0), 1.0)
 	_anchor(charge_bar, 0.5, 0.5, -60.0, 34.0, 60.0, 42.0)
 	charge_bar.visible = false
@@ -315,6 +345,85 @@ func _build_hud() -> void:
 	root.add_child(element_label)
 
 	_build_pause_menu(root)
+
+
+# Ability indicators (cooldown sweep, ready flash, dimmed when unusable): one row per nation plus one for octopus form.
+func _build_slots(root: Control) -> void:
+	var air := Color(0.78, 0.93, 1.0)
+	var earth := Color(0.85, 0.62, 0.32)
+	var water := Color(0.45, 0.78, 1.0)
+	var gold := Color(1.0, 0.85, 0.4)
+	var defs := {
+		"air": [["PUNCH", "LMB", air], ["SLICE", "RMB", air], ["SHIELD", "ability_e", air], ["SUCTION", "ability_f", air], ["SCOOTER", "ability_q", air], ["GUST", "2xSPC", air], ["ULT", "ultimate", gold]],
+		"earth": [["ROCK", "LMB", earth], ["BOULDER", "RMB", earth], ["BARRAGE", "ability_z", earth], ["WALL", "ability_e", earth], ["PILLAR", "ability_f", earth], ["ARMOR", "ability_v", earth], ["SKATE", "ability_q", earth], ["ULT", "ultimate", gold]],
+		"water": [["WHIP", "LMB", water], ["HEAL", "RMB", water], ["SHARDS", "ability_z", water], ["ICE WALL", "ability_e", water], ["DISC", "ability_e", water], ["SKATE", "ability_q", water], ["FREEZE", "ability_freeze", water], ["PROPEL", "SPC", water], ["ULT", "ultimate", gold]],
+		"octo": [["L ARM", "LMB", water], ["R ARM", "RMB", water], ["SLAM", "ability_e", water], ["GRAB", "ability_q", water], ["ULT", "ultimate", gold]],
+	}
+	for k in defs:
+		var row := HBoxContainer.new()
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		row.add_theme_constant_override("separation", 6)
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_anchor(row, 0.5, 1.0, -260.0, -176.0, 260.0, -126.0)
+		row.visible = false
+		root.add_child(row)
+		var nodes := []
+		for d in defs[k]:
+			var s := HudSlot.new()
+			s.title = String(d[0])
+			s.set_key(String(d[1]))
+			s.accent = d[2]
+			row.add_child(s)
+			nodes.append(s)
+		slot_rows[k] = row
+		slot_nodes[k] = nodes
+
+
+# Feeds the current row. Reads sim values only, so debug mode (no cooldowns) just shows everything ready.
+func _update_slots(dt: float) -> void:
+	var el: String = sim.element
+	if el == "water" and sim.octo_t > 0.0:
+		el = "octo"
+	for k in slot_rows:
+		slot_rows[k].visible = k == el
+	var s: Array = slot_nodes[el]
+	var chi: float = sim.chi
+	match el:
+		"air":
+			s[0].update_slot(dt, sim.punch_cd, C.PUNCH_COOLDOWN, chi >= C.PUNCH_COST, false)
+			s[1].update_slot(dt, sim.slice_cd, C.SLICE_COOLDOWN, chi >= C.SLICE_COST, false)
+			s[2].update_slot(dt, 0.0, 0.0, chi >= C.SHIELD_MIN_CHI or sim.shield_on, sim.shield_on)
+			s[3].update_slot(dt, 0.0, 0.0, chi >= C.SUCTION_MIN_CHI or sim.suction_on, sim.suction_on)
+			s[4].update_slot(dt, 0.0, 0.0, chi > 0.0 or sim.scooter, sim.scooter)
+			s[5].update_slot(dt, sim.gust_cd, C.GUST_COOLDOWN, chi >= C.GUST_COST, false)
+		"earth":
+			s[0].update_slot(dt, sim.punch_cd, C.ROCK_COOLDOWN, chi >= C.ROCK_COST, false)
+			s[1].update_slot(dt, sim.boulder_cd, C.BOULDER_COOLDOWN, chi >= C.BOULDER_COST, false)
+			s[2].update_slot(dt, sim.barrage_cd, C.BARRAGE_COOLDOWN, chi >= C.BARRAGE_COST, false)
+			s[3].update_slot(dt, sim.wall_cd, C.WALL_COOLDOWN, chi >= C.WALL_COST, false)
+			# pillars: the short gap between two, or (with none left) the wait for the next charge to come back
+			if sim.pillar_charges > 0:
+				s[4].update_slot(dt, sim.pillar_cd, C.PILLAR_COOLDOWN, chi >= C.PILLAR_COST, false, sim.pillar_charges)
+			else:
+				s[4].update_slot(dt, C.PILLAR_RECHARGE - sim.pillar_recharge, C.PILLAR_RECHARGE, false, false, 0)
+			s[5].update_slot(dt, sim.armor_cd, C.ARMOR_TOGGLE_CD, chi >= C.ARMOR_COST or sim.armor_on, sim.armor_on)
+			s[6].update_slot(dt, 0.0, 0.0, chi > 0.0 or sim.skating, sim.skating)
+		"water":
+			s[0].update_slot(dt, sim.punch_cd, C.WHIP_COOLDOWN, chi >= sim._cost(C.WHIP_COST), false)
+			s[1].update_slot(dt, sim.heal_cd, C.HEAL_COOLDOWN, chi >= sim._cost(C.HEAL_COST) and sim.hp < C.PLAYER_HP - 0.5, sim.heal_left > 0.0)
+			s[2].update_slot(dt, sim.barrage_cd, C.SHARD_COOLDOWN, chi >= sim._cost(C.SHARD_COST), false)
+			s[3].update_slot(dt, sim.iwall_cd, C.ICE_WALL_COOLDOWN, chi >= sim._cost(C.ICE_WALL_COST), false)
+			s[4].update_slot(dt, sim.disc_cd, C.DISC_COOLDOWN, chi >= sim._cost(C.DISC_COST), false)
+			s[5].update_slot(dt, 0.0, 0.0, chi >= sim._cost(C.ICE_SKATE_COST) or sim.skating, sim.skating)
+			s[6].update_slot(dt, 0.0, 0.0, true, sim.freezing)
+			s[7].update_slot(dt, sim.propel_cd, C.PROPEL_COOLDOWN, chi >= sim._cost(C.PROPEL_MIN), sim.propelling)
+		"octo":
+			s[0].update_slot(dt, sim.octo_cd, C.OCTO_SWIPE_COOLDOWN, true, false)
+			s[1].update_slot(dt, sim.octo_cd_r, C.OCTO_SWIPE_COOLDOWN, true, false)
+			s[2].update_slot(dt, sim.octo_slam_cd, C.OCTO_SLAM_COOLDOWN, true, false)
+			s[3].update_slot(dt, sim.octo_q_cd, C.OCTO_GRAB_COOLDOWN, true, false)
+	# the ultimate meter: the sweep is what is still missing, it flashes when full
+	s[s.size() - 1].update_slot(dt, C.ULT_MAX - sim.ult, C.ULT_MAX, sim.ult_ready(), sim.octo_t > 0.0 or sim.breath_t > 0.0 or sim.quake_t > 0.0, -1, false)
 
 
 # The pause menu: Resume / Restart / My moves / Options / Quit to menu. "My moves" and "Options" open inside it.
@@ -404,9 +513,21 @@ func _show_moves() -> void:
 	_open_sub(v)
 
 
+# Slot key labels follow the key bindings (a rebind in Options shows up when it closes).
+func _refresh_slot_keys() -> void:
+	for k in slot_nodes:
+		for s in slot_nodes[k]:
+			s.refresh_keys()
+
+
+func _options_closed() -> void:
+	_refresh_slot_keys()
+	_show_pause_main()
+
+
 func _show_options() -> void:
 	var o := OptionsUI.new()
-	o.closed.connect(_show_pause_main)
+	o.closed.connect(_options_closed)
 	_open_sub(o)
 
 
@@ -531,7 +652,9 @@ func _poll_input() -> void:
 # ------------------------------------------------------------------ frame loop
 
 func _process(delta: float) -> void:
-	var dt := minf(delta, 0.1)
+	var dt := minf(delta, 0.05)                 # a hitch never makes the simulation run a long catch-up burst
+	if Settings.quality != _quality_applied:
+		_apply_quality()
 	clock += dt
 	if captured:
 		_poll_input()
@@ -567,7 +690,7 @@ func _process(delta: float) -> void:
 	respawn_queued = false
 
 	_update_ult_sky(dt)
-	terrain_view.update(3)
+	terrain_view.update(6)
 	_handle_events()
 	_update_camera(dt)
 	var a := accumulator / TICK
@@ -636,6 +759,15 @@ func _handle_events() -> void:
 				rig_shake = 1.0
 			"pillar":
 				rig_shake = maxf(rig_shake, 0.4)
+			"propel":
+				rig_kick = 0.12
+				rig_fov_punch = 9.0
+				rig_shake = maxf(rig_shake, 0.3)
+			"slab_throw":
+				rig_kick = 0.1
+				rig_shake = maxf(rig_shake, 0.4)
+			"bullet":
+				rig_kick = 0.02
 			"whip":
 				rig_kick = 0.04
 				rig_fov_punch = 2.0
@@ -722,6 +854,7 @@ func _update_hud(dt: float) -> void:
 		debug_label.text = "DEBUG MODE ON: god mode, no cooldowns, unlimited ultimates" if Settings.debug_enabled else "DEBUG MODE OFF"
 	else:
 		debug_label.text = "DEBUG"
+	_update_slots(dt)
 	speed_label.text = "%.1f m/s" % sim.speed()
 	state_label.text = sim.state_name()
 	var eye_y: float = sim.pos.y + sim.eye_height()
@@ -760,10 +893,10 @@ func _update_hud(dt: float) -> void:
 		var kq := Settings.key_name("ability_q")
 		var ke := Settings.key_name("ability_e")
 		hints_label.text = ("OCTOPUS:  LMB left arm   RMB right arm   %s slam   %s grab / throw" % [ke, kq] if sim.octo_t > 0.0 \
-				else "LMB whip / hold jet   RMB heal   %s ice shards   %s ice wall, again near it: discs   %s ice skate   %s freeze%s   hold %s gather   %s tap octopus / hold wave" \
+				else "LMB whip / hold bullets   hold Space over water: propel   RMB heal   %s ice shards   %s ice wall, again near it: discs   %s ice skate   %s freeze%s   hold %s gather   %s tap octopus / hold wave" \
 				% [Settings.key_name("ability_z"), ke, kq, Settings.key_name("ability_freeze"), " (ON)" if sim.freezing else "", Settings.key_name("ability_f"), Settings.key_name("ultimate")])
 	else:
-		hints_label.text = ("LMB rock/wave  RMB boulder  Z barrage  Q skate  E wall  G grab  F pillar  V armor  hold Space at wall: elevator  X ult" if earth \
+		hints_label.text = ("LMB rock/wave  RMB boulder  Z barrage  Q skate  E wall  G grab  F pillar  V armor  hold Space at wall: elevator  X ult   (carrying a wall: LMB throws it)" if earth \
 				else "LMB punch / hold blast   RMB slice   E shield   F suction   Q scooter   X ultimate")
 	if sim.octo_t > 0.0:
 		ult_label.text = "OCTOPUS FORM"

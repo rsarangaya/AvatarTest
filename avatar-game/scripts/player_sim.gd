@@ -60,6 +60,12 @@ var boulder_cd := 0.0
 var barrage_cd := 0.0
 var wall_cd := 0.0
 var pillar_cd := 0.0
+var pillar_charges := C.PILLAR_CHARGES   # earth pillars in hand: each comes back PILLAR_RECHARGE seconds after use
+var pillar_recharge := 0.0
+var bullet_cd := 0.0
+var propel_cd := 0.0
+var propel_armed := true         # a jet that has ended re-arms only after touching ground or water with Space released
+var propelling := false          # hold Space over water: the jet is lifting you
 
 # vitals
 var hp: float = C.PLAYER_HP
@@ -159,6 +165,12 @@ func respawn() -> void:
 	melee_combo = 0
 	melee_hold = false
 	boulder_pull = {}
+	pillar_charges = C.PILLAR_CHARGES
+	pillar_recharge = 0.0
+	bullet_cd = 0.0
+	propel_cd = 0.0
+	propelling = false
+	propel_armed = true
 	elevating = false
 	armor_on = false
 	armor_hp = C.ARMOR_HP
@@ -321,6 +333,11 @@ func _clear_cooldowns() -> void:
 	barrage_cd = 0.0
 	wall_cd = 0.0
 	pillar_cd = 0.0
+	pillar_charges = C.PILLAR_CHARGES
+	bullet_cd = 0.0
+	propel_cd = 0.0
+	propelling = false
+	propel_armed = true
 	armor_cd = 0.0
 	melee_cd = 0.0
 	iwall_cd = 0.0
@@ -361,6 +378,13 @@ func _step(dt: float, inp: InputState) -> void:
 	barrage_cd = maxf(0.0, barrage_cd - dt)
 	wall_cd = maxf(0.0, wall_cd - dt)
 	pillar_cd = maxf(0.0, pillar_cd - dt)
+	bullet_cd = maxf(0.0, bullet_cd - dt)
+	propel_cd = maxf(0.0, propel_cd - dt)
+	if pillar_charges < C.PILLAR_CHARGES:
+		pillar_recharge += dt
+		if pillar_recharge >= C.PILLAR_RECHARGE:
+			pillar_recharge = 0.0
+			pillar_charges += 1
 	armor_cd = maxf(0.0, armor_cd - dt)
 	iwall_cd = maxf(0.0, iwall_cd - dt)
 	disc_cd = maxf(0.0, disc_cd - dt)
@@ -479,6 +503,7 @@ func _step(dt: float, inp: InputState) -> void:
 			sliding = false
 			crouching = false
 			gliding = false
+	_update_propel(dt, inp)
 	if on_ground and not swimming:
 		var on_ice: bool = world.terrain.ice_at(pos.x, pos.z)
 		if element == "water":
@@ -522,6 +547,8 @@ func _step(dt: float, inp: InputState) -> void:
 		vel.z = lean.z
 	elif wallrun:
 		_wallrun_forces(dt, inp)
+	elif propelling:
+		_propel_forces(dt, wish, wl)
 	elif swimming:
 		_swim_forces(dt, inp, wish, wl)
 	elif on_ground:
@@ -612,7 +639,7 @@ func _swim_forces(dt: float, inp, wish: Vector3, wl: float) -> void:
 	var want_vy := clampf((target_y - pos.y) * 3.0, -3.0, 3.0)
 	if inp.crouch and not skate_swim:
 		want_vy = -C.SWIM_DIVE
-	elif inp.jump_held:
+	elif inp.jump_held and pos.y < target_y + 0.3:      # Space swims you up to the surface, not on into the air
 		want_vy = C.SWIM_RISE
 	vel.y = move_toward(vel.y, want_vy, 14.0 * dt)
 	if jump_buf > 0.0 and pos.y > surf - C.SWIM_FLOAT - 0.4:
@@ -952,6 +979,13 @@ func _update_abilities(dt: float, inp: InputState) -> void:
 		_update_water(dt, inp, look, origin)
 		return
 
+	# Carrying an earth slab: left click throws it (it breaks on whatever it hits)
+	if element == "earth" and not world.held.is_empty() and inp.fire_pressed:
+		inp.fire_pressed = false
+		if world.throw_held(origin, look):
+			events.append({"type": "slab_throw", "dir": look})
+		return
+
 	# Left button: tap = Air Punch / Rock Throw, hold = charge, release = Air Blast / Earth Wave
 	var tap_cost: float = C.ROCK_COST if element == "earth" else C.PUNCH_COST
 	if inp.fire_pressed:
@@ -1272,7 +1306,7 @@ func _try_wall(look: Vector3) -> void:
 
 # Pillar where the crosshair meets the ground; look at your own feet to ride it.
 func _try_pillar(look: Vector3, origin: Vector3) -> void:
-	if pillar_cd > 0.0 or chi < C.PILLAR_COST:
+	if pillar_cd > 0.0 or pillar_charges <= 0 or chi < C.PILLAR_COST:
 		return
 	var ray: Dictionary = world.aim_point(origin, look, C.PILLAR_RANGE)
 	var at := pos
@@ -1285,7 +1319,8 @@ func _try_pillar(look: Vector3, origin: Vector3) -> void:
 	chi -= C.PILLAR_COST
 	chi_delay = C.CHI_REGEN_DELAY
 	pillar_cd = C.PILLAR_COOLDOWN
-	events.append({"type": "pillar", "pos": at, "what": what})
+	pillar_charges -= 1
+	events.append({"type": "pillar", "pos": at, "what": what, "charges": pillar_charges})
 
 
 # ------------------------------------------------------------------ waterbending
@@ -1449,32 +1484,10 @@ func _update_water(dt: float, inp: InputState, look: Vector3, origin: Vector3) -
 	if fire_down:
 		if inp.fire_held:
 			fire_time += dt
-			if fire_time >= C.TAP_TIME:
-				if not jet_on and chi >= _cost(C.JET_MIN):
-					jet_on = true
-					skating = false
-					events.append({"type": "jet_start"})
-				if jet_on:
-					var jet_spent := _cost(C.JET_DRAIN) * dt
-					chi = maxf(0.0, chi - jet_spent)
-					chi_delay = C.WATER_PASSIVE_DELAY
-					_jet_drop_amt += jet_spent                         # the jet's water falls where the stream ends
-					_jet_drop_t += dt
-					if _jet_drop_t >= 0.3:
-						world.deposit_water(_landing(origin, look, C.JET_RANGE), _jet_drop_amt)
-						_jet_drop_t = 0.0
-						_jet_drop_amt = 0.0
-					world.apply_jet(origin, look, dt)
-					vel -= Vector3(look.x, 0.0, look.z) * (C.JET_RECOIL * dt)
-					if chi <= 0.0 and not near_water:
-						jet_on = false
-						fire_down = false
-						events.append({"type": "jet_end"})
+			if fire_time >= C.TAP_TIME and bullet_cd <= 0.0 and chi >= _cost(C.BULLET_COST):
+				_fire_bullet(look, origin)                                   # hold: a quick stream of water bullets
 		else:
-			if jet_on:
-				jet_on = false
-				events.append({"type": "jet_end"})
-			elif fire_time < C.TAP_TIME:
+			if fire_time < C.TAP_TIME:
 				_try_whip(look, origin)
 			fire_down = false
 
@@ -1498,6 +1511,58 @@ func _update_water(dt: float, inp: InputState, look: Vector3, origin: Vector3) -
 	# E: Ice Wall (or freeze the enemy right in front of you)
 	if _e_edge and not jet_on:
 		_try_ice_wall(look)
+
+
+func _fire_bullet(look: Vector3, origin: Vector3) -> void:
+	var water := _cost(C.BULLET_COST)
+	chi -= water
+	chi_delay = C.WATER_PASSIVE_DELAY
+	bullet_cd = C.BULLET_COOLDOWN
+	var right := look.cross(Vector3.UP)
+	right = right.normalized() if right.length() > 0.01 else Vector3.RIGHT
+	whip_flip = not whip_flip
+	var side := 0.28 if whip_flip else -0.28
+	var bp = world.spawn_proj("wbullet", "player", origin + look * 0.9 + right * side + Vector3(0.0, -0.22, 0.0),
+			look * C.BULLET_SPEED, C.BULLET_LIFE, C.BULLET_RADIUS, C.BULLET_DAMAGE, C.BULLET_KNOCKBACK, false)
+	bp.water = water * 2.0                                   # what it carried lands as a puddle where it ends
+	events.append({"type": "bullet", "dir": look})
+
+
+# Hold Space with water (or ice) under your feet: a jet lifts you steadily. Stops on release, when the water is not
+# below you any more, or above PROPEL_REACH. Then PROPEL_COOLDOWN of rest.
+func _update_propel(dt: float, inp) -> void:
+	var was := propelling
+	propelling = false
+	if not was and not propel_armed and not inp.jump_held and (on_ground or (water_depth > 0.05 and pos.y - world.terrain.surface_at(pos.x, pos.z) <= C.PROPEL_REARM_HEIGHT)):
+		propel_armed = true
+	if element == "water" and inp.jump_held and propel_armed and propel_cd <= 0.0 and not skating and not sliding:
+		var t = world.terrain
+		if water_depth > 0.05 or t.ice_at(pos.x, pos.z):
+			if pos.y - t.surface_at(pos.x, pos.z) <= C.PROPEL_REACH and (was or chi >= _cost(C.PROPEL_MIN)) and (chi > 0.0 or near_water):
+				propelling = true
+	if propelling:
+		if not was:
+			events.append({"type": "propel", "pos": pos})
+		jump_buf = 0.0
+		on_ground = false
+		coyote = 0.0
+		chi = maxf(0.0, chi - _cost(C.PROPEL_DRAIN) * dt)
+		chi_delay = C.WATER_PASSIVE_DELAY
+	elif was:
+		propel_cd = C.PROPEL_COOLDOWN
+		propel_armed = false
+
+
+func _propel_forces(dt: float, wish: Vector3, wl: float) -> void:
+	air_time = 0.0
+	ground_time = 0.0
+	elevating = false
+	vel.y = move_toward(vel.y, C.PROPEL_VY, C.PROPEL_ACCEL * dt)
+	_air_control(dt, wish, wl, C.PROPEL_AIR_ACCEL, C.PROPEL_SPEED)
+	var drag := maxf(0.0, 1.0 - C.PROPEL_DRAG * dt)
+	if speed() > C.PROPEL_SPEED:
+		vel.x *= drag
+		vel.z *= drag
 
 
 func _try_whip(look: Vector3, origin: Vector3) -> void:

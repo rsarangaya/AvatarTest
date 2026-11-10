@@ -115,12 +115,35 @@ func generate(seed_value: int) -> void:
 					g = lerpf(banks, rs - 2.3, core)
 					wgt = valley
 					cw = core
+			# the two great rivers: a winding one west to east and a tributary north to south, so that water always runs
+			# through the middle of the map (a waterbender can travel and fight on it) and out to the sea at both ends
+			var dgreat := minf(absf(z - river_z(x)), absf(x - river_x(z)))
+			var fade_sea := 1.0 - C.ss(158.0, 178.0, e)
+			var gv := (1.0 - C.ss(7.0, 17.0, dgreat)) * fade_sea
+			if gv > 0.0:
+				var gc := (1.0 - C.ss(3.6, 6.2, dgreat)) * fade_sea
+				var rs_g := clampf(_glow(x, z) - 0.9, SEA_Y + 1.2, SEA_Y + 6.0)
+				var banks_g := lerpf(g, minf(g, rs_g + 1.0), gv)
+				g = lerpf(banks_g, rs_g - 2.3, gc)
+				if gc > cw:
+					rs = rs_g
+				wgt = maxf(wgt, gv)
+				cw = maxf(cw, gc)
 			h[i] = g
 			base[i] = g
 			_rs[i] = rs
 			_rg[i] = wgt
 			_rc[i] = cw
 	dirty.clear()
+
+
+# Centre lines of the two great rivers (see generate): z of the west-east one at x, x of the north-south one at z.
+func river_z(x: float) -> float:
+	return -58.0 + 16.0 * sin(x * 0.035)
+
+
+func river_x(z: float) -> float:
+	return 66.0 + 14.0 * sin(z * 0.03 + 1.7)
 
 
 # Everything except the fine noise: the broad shape of the land. Rivers follow this.

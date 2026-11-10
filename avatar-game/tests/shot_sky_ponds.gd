@@ -22,6 +22,8 @@ func ip() -> SimScript.InputState:
 func _initialize() -> void:
 	Settings.persist = false
 	Settings.ensure_loaded()
+	if OS.get_environment("SHOT_Q") != "":
+		Settings.quality = int(OS.get_environment("SHOT_Q"))
 	out = OS.get_environment("SHOT_OUT")
 	if out == "":
 		out = OS.get_user_data_dir()

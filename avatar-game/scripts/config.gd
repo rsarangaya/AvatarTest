@@ -99,7 +99,7 @@ const SCOOTER_JUMP_MULT := 1.15
 
 # ---- Left click: tap = Air Punch, hold = charge an Air Blast ----
 const TAP_TIME := 0.22                   # held longer than this = charging
-const PUNCH_COST := 5.0
+const PUNCH_COST := 11.0
 const PUNCH_COOLDOWN := 0.2
 const PUNCH_SPEED := 40.0                # a small fast gust
 const PUNCH_LIFE := 0.28                 # ~11 m of range
@@ -130,7 +130,7 @@ const SLICE_COOLDOWN := 0.45
 const SLICE_SPEED := 48.0
 const SLICE_LIFE := 1.0
 const SLICE_RADIUS := 1.5
-const SLICE_DAMAGE := 24.0
+const SLICE_DAMAGE := 21.0
 const SLICE_KNOCKBACK := 10.0
 
 # ---- E (hold): Air Shield. Reflects enemy bolts back at whoever fired them. ----
@@ -204,7 +204,7 @@ const ROCK_SPEED := 36.0
 const ROCK_LIFE := 2.2
 const ROCK_GRAVITY := 13.0
 const ROCK_RADIUS := 0.6
-const ROCK_DAMAGE := 16.0
+const ROCK_DAMAGE := 11.0
 const ROCK_KNOCKBACK := 9.0
 const ROCK_SPLASH := 2.8
 const ROCK_SPLASH_DAMAGE := 12.0
@@ -234,13 +234,24 @@ const WALL_W_FLANK := 1.3
 const WALL_GRAB_RANGE := 8.0             # how close you must be to a wall to grab it
 const HELD_HALF_WIDTH := 2.6             # the carried slab
 const HELD_HEIGHT := 1.45
+const HELD_MAX_HALF_WIDTH := 4.0          # a carried slab is a small copy of its wall with the same proportions (planted, the wall is full size again)
+const HELD_MAX_HEIGHT := 1.7
 const HELD_DIST := 2.4
 const HELD_HP := 160.0
 const HELD_MOVE_MULT := 0.8
+# Throwing the carried slab (left click): it flies, then breaks on whatever it hits and hurts what is around
+const SLAB_SPEED := 46.0
+const SLAB_GRAVITY := 10.0
+const SLAB_LIFE := 2.5
+const SLAB_DAMAGE := 70.0                # scaled down for a battered slab
+const SLAB_SPLASH := 5.5
+const SLAB_SPLASH_DAMAGE := 30.0
 
 # ---- F: Earth Pillar (aim at ground, or at your feet to ride it) ----
 const PILLAR_COST := 24.0
-const PILLAR_COOLDOWN := 0.9
+const PILLAR_COOLDOWN := 0.5              # between two pillars
+const PILLAR_CHARGES := 2                 # you hold this many pillars; each one comes back after PILLAR_RECHARGE seconds
+const PILLAR_RECHARGE := 7.0
 const PILLAR_RANGE := 30.0
 const PILLAR_HEIGHT := 6.5
 const PILLAR_DUR := 0.3
@@ -251,7 +262,7 @@ const PILLAR_SIDE_LEN := 11.0             # length of a sideways pillar
 const PILLAR_SIDE_RISE := 1.2             # its flat top sits this far above the point you aimed at
 const PILLAR_SIDE_DUR := 0.5
 const PILLAR_BOT_LAUNCH := 13.0
-const PILLAR_BOT_DAMAGE := 40.0
+const PILLAR_BOT_DAMAGE := 55.0
 const LIFT_LAUNCH_RATE := 8.0            # ground rising faster than this (m/s) throws you instead of carrying you
 const LIFT_LAUNCH_MAX := 17.0
 
@@ -292,7 +303,7 @@ const BOULDER_SPEED := 26.0
 const BOULDER_LIFE := 3.2
 const BOULDER_GRAVITY := 8.0
 const BOULDER_RADIUS := 1.2
-const BOULDER_DAMAGE := 45.0
+const BOULDER_DAMAGE := 55.0
 const BOULDER_KNOCKBACK := 16.0
 const BOULDER_SPLASH := 6.5
 const BOULDER_SPLASH_DAMAGE := 40.0
@@ -403,6 +414,28 @@ const WHIP_REACH := 9.0
 const WHIP_WIDTH := 1.1                  # how far from the lash a body can be and still get hit
 const WHIP_DAMAGE := 15.0
 const WHIP_KNOCKBACK := 6.0
+# Water bullet (hold left click): a quick stream of small, fast bullets of water
+const BULLET_COST := 5.0                  # pouch per bullet (free near water, as everything is)
+const BULLET_COOLDOWN := 0.18
+const BULLET_SPEED := 80.0
+const BULLET_LIFE := 1.1
+const BULLET_RADIUS := 0.32
+const BULLET_DAMAGE := 8.5
+const BULLET_KNOCKBACK := 3.0
+# Water propel (hold Space): while water or ice is under your feet (within PROPEL_REACH below you) a jet lifts you
+# steadily, like riding a rising column. Let go or lose the water below and it stops (you simply fall, no burst).
+# Deliberately weaker than airbending mobility: air jump is about 1.7 m, a gust jump adds 13 m/s up (about 3.5 m) and
+# can be chained, glide and scooter keep going; propel tops out at about 5 m over the water (reach + a short coast) and drifts slowly.
+const PROPEL_VY := 7.0                    # m/s upward speed cap while the jet is on
+const PROPEL_ACCEL := 30.0                # m/s^2 towards that speed (it builds up, no burst)
+const PROPEL_REACH := 3.5                 # m: the jet only lifts while your feet are at most this high above the water/ice
+const PROPEL_SPEED := 7.0                 # m/s: sideways speed cap while lifting (modest forward carry, about a walk/sprint)
+const PROPEL_AIR_ACCEL := 10.0            # m/s^2 of steering while lifting
+const PROPEL_DRAG := 1.0                  # per second, bleeds extra sideways speed while lifting
+const PROPEL_REARM_HEIGHT := 0.3          # m: after a jet ends, touching the ground or getting this close to the water, with Space released, re-arms it (no bobbing)
+const PROPEL_COOLDOWN := 0.6              # s of rest after you let go or run out of water
+const PROPEL_DRAIN := 12.0                # pouch per second while held (free near water, as every water move is)
+const PROPEL_MIN := 6.0                   # pouch needed to start (free near water)
 const JET_DRAIN := 20.0
 const JET_MIN := 4.0
 const JET_RANGE := 17.0
@@ -414,9 +447,9 @@ const JET_MOVE_MULT := 0.75
 
 # ---- Right click: heal ----
 const HEAL_COST := 24.0
-const HEAL_AMOUNT := 36.0
+const HEAL_AMOUNT := 28.0
 const HEAL_TIME := 1.3
-const HEAL_COOLDOWN := 2.0
+const HEAL_COOLDOWN := 2.6
 
 # ---- Z: Ice Shards ----
 const SHARD_COST := 26.0
@@ -426,7 +459,7 @@ const SHARD_SPEED := 64.0
 const SHARD_LIFE := 1.3
 const SHARD_RADIUS := 0.45
 const SHARD_SPREAD := 0.035
-const SHARD_DAMAGE := 19.0               # per spike: a close fan of seven can do well over 100
+const SHARD_DAMAGE := 12.0              # per spike: a close fan of seven can do well over 100
 const SHARD_KNOCKBACK := 6.0
 
 # ---- T: freeze / unfreeze (a toggle). While on, the water around and ahead of you freezes as you move; press again to
@@ -455,6 +488,7 @@ const ICE_MELT := 45.0                   # seconds a sheet of ice lasts before t
 # ---- E: Ice Wall (breaks after one hit). Used on an enemy in front of you it freezes them solid ----
 const ICE_WALL_COST := 22.0
 const ICE_WALL_COOLDOWN := 1.6
+const ICE_WALL_HITS := 2                  # hits it takes to break (a wall that has thrown a disc is no longer hurt by hits)
 const ICE_WALL_DIST := 3.6
 const ICE_WALL_HALF_WIDTH := 3.4
 const ICE_WALL_HEIGHT := 3.4
@@ -464,10 +498,10 @@ const DISC_NEAR := 8.0                    # how close you must be to the wall (m
 const DISC_COST := 7.0                    # one disc per press
 const DISC_COOLDOWN := 0.45
 const DISC_SHOTS := 4                     # a wall gives this many discs; it shrinks with every one and is gone after the last
-const DISC_SPEED := 62.0
+const DISC_SPEED := 50.0
 const DISC_LIFE := 1.5
 const DISC_RADIUS := 0.95
-const DISC_DAMAGE := 40.0
+const DISC_DAMAGE := 28.0
 const DISC_KNOCKBACK := 9.0
 const ICE_WALL_LIFE := 25.0             # an untouched ice wall melts away after this long
 const ICE_FREEZE_RANGE := 1.9            # about 6 ft
@@ -487,21 +521,22 @@ const TIDE_HALF_MIN := 7.0               # half width of the wave (it is 2 x thi
 const TIDE_HALF_MAX := 20.0
 const TIDE_LEN_MIN := 28.0
 const TIDE_LEN_MAX := 62.0
-const TIDE_DAMAGE_MIN := 14.0
-const TIDE_DAMAGE_MAX := 40.0
+const TIDE_DAMAGE_MIN := 30.0
+const TIDE_DAMAGE_MAX := 80.0
+const TIDE_COOLDOWN := 5.0               # nominal seconds per wave, only used by the damage table (the real gate is the ult meter)
 const TIDE_FLOOD_MIN := 0.5              # the water left behind (wading depth: freeze it with Q and slide)
 const TIDE_FLOOD_MAX := 1.1
 const TIDE_FLOOD_END := 0.55             # share of that depth left at the far end of the wave
 const TIDE_BARREL_MIN := 1.3             # height of the rolling wave
 const TIDE_BARREL_MAX := 3.2
 
-const OCTO_TIME := 16.0
+const OCTO_TIME := 9.0
 const OCTO_REACH := 16.0
 const OCTO_WIDTH := 1.9
-const OCTO_SWIPE_DAMAGE := 48.0
-const OCTO_SWIPE_COOLDOWN := 0.45
+const OCTO_SWIPE_DAMAGE := 12.0
+const OCTO_SWIPE_COOLDOWN := 0.55
 const OCTO_SWIPE_KNOCK := 12.0
-const OCTO_SLAM_DAMAGE := 95.0
+const OCTO_SLAM_DAMAGE := 55.0
 const OCTO_SLAM_RADIUS := 8.5
 const OCTO_SLAM_DIST := 8.0
 const OCTO_SLAM_COOLDOWN := 2.6
@@ -510,7 +545,7 @@ const OCTO_GRAB_COS := 0.8
 const OCTO_GRAB_TIME := 3.0
 const OCTO_HOLD_DIST := 3.4
 const OCTO_THROW_SPEED := 30.0
-const OCTO_THROW_DAMAGE := 40.0
+const OCTO_THROW_DAMAGE := 30.0
 const OCTO_GRAB_COOLDOWN := 1.0
 
 const BOULDER_PULL_TIME := 0.5
@@ -573,3 +608,23 @@ const BOT_MELEE_WINDUP := 0.38
 const BOT_MELEE_COOLDOWN := 1.3
 const BOT_MELEE_DAMAGE := 9.0
 const BOT_MELEE_PUSH := 5.0
+
+
+# ---- Projectile clashes ----
+# Two projectiles of opposite sides (player vs enemy/bot) that touch destroy each other, unless one is tougher: the
+# heavier one survives (a light one is wasted on it), equal toughness destroys both. Same-side projectiles never clash.
+# A kind that is NOT in this table is an ultimate (or anything an ultimate spawns) and is ignored by clashes: it
+# neither gets destroyed nor destroys others. (Tidal wave, air bomb, air breath, earth clap, earthquake and octopus arms
+# are not projectiles at all, so they are untouched by construction.)
+const PROJ_TOUGHNESS := {
+	"bolt": 1,       # bot bolt
+	"punch": 1,      # air punch / charged blast
+	"slice": 1,      # air slice
+	"wbullet": 1,    # water bullet
+	"shard": 1,      # ice shard (also the enemy's)
+	"rock": 2,       # rock throw / stone barrage
+	"boulder": 3,
+	"slab": 3,       # thrown earth wall
+	"disc": 3,       # ice disc (still passes through enemies)
+}
+const CLASH_PAD := 0.1                    # m added to the two radii when testing a touch

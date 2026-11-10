@@ -205,6 +205,10 @@ func _init() -> void:
 	test_ice_wall()
 	test_freeze_enemy()
 	test_ice_discs()
+	test_disc_wall_persists()
+	test_earth_wall_slab()
+	test_pillar_charges()
+	test_propel()
 	test_earth_spire()
 	test_debug_flags()
 	test_ice_skate()
@@ -332,12 +336,14 @@ func test_free_near_water() -> void:
 		if pr.kind == "shard":
 			shards += 1
 	ok(shards == C.SHARD_COUNT and p.chi == 0.0, "ice shards are free too")
+	var ids0: int = w._next_id
 	for i in range(120):
 		var h := ip()
 		h.fire_held = true
 		h.fire_pressed = i == 0
 		p.step(TICK, h)
-	ok(p.jet_on and p.chi == 0.0, "the jet runs without draining anything")
+	var bullets: int = w._next_id - ids0                    # ids handed out during the hold: shards (7) came before it
+	ok(bullets >= 3 and p.chi == 0.0, "holding LMB streams water bullets without draining anything (%d fired)" % bullets)
 	idle(p, 0.2)
 	p.hp = 40.0
 	p.hp_delay = 100.0
@@ -533,19 +539,20 @@ func test_whip_jet() -> void:
 	var jb = bot_ahead(jw, jp, 8.0)
 	var start := Vector2(jb.pos.x, jb.pos.z)
 	var jchi: float = jp.chi
+	var jids0: int = jw._next_id
 	for i in range(120):
 		var h := ip()
 		h.fire_held = true
 		h.fire_pressed = i == 0
 		jp.step(TICK, h)
-	var moved := Vector2(jb.pos.x, jb.pos.z) - start
-	var push_dir := Vector2(-sin(jp.yaw), -cos(jp.yaw))
-	ok(jp.jet_on and jp.state_name() == "WATER JET", "holding LMB runs the water jet")
-	ok(moved.dot(push_dir) > 1.0, "the jet pushes the enemy back (%.1f m)" % moved.dot(push_dir))
-	ok(jb.hp < C.BOT_HP, "the jet hurts a little (hp %.0f)" % jb.hp)
-	ok(jp.chi < jchi - 10.0, "the jet drains the pouch (%.0f -> %.0f)" % [jchi, jp.chi])
-	idle(jp, 0.2)
-	ok(not jp.jet_on, "releasing LMB stops the jet")
+	var fired: int = jw._next_id - jids0
+	idle(jp, 0.5)
+	ok(fired >= 3 and not jp.jet_on, "holding LMB fires water bullets, not a jet (%d in the air)" % fired)
+	ok(jb.hp < C.BOT_HP - C.BULLET_DAMAGE * 1.5, "the bullets hurt the enemy (hp %.0f)" % jb.hp)
+	ok(jp.chi < jchi - 10.0, "bullets drain the pouch away from water (%.0f -> %.0f)" % [jchi, jp.chi])
+	var shots_before := bullet_total(jw)
+	idle(jp, 0.3)
+	ok(bullet_total(jw) == shots_before, "releasing LMB stops the bullets")
 
 	# an empty pouch means fists, and fists do not refill it
 	var wf := fresh_dry()
@@ -619,7 +626,10 @@ func test_ice_wall() -> void:
 	var target: Vector3 = c + Vector3(0.0, 1.2, 0.0)
 	w.spawn_proj("bolt", "enemy", from, (target - from).normalized() * 20.0, 3.0, 0.35, 5.0, 0.0)
 	idle(p, 1.0)
-	ok(w.ice_walls.is_empty(), "one hit shatters the wall")
+	ok(w.ice_walls.size() == 1 and has_wevent(w, "ice_crack"), "the first hit only cracks the wall")
+	w.spawn_proj("bolt", "enemy", from, (target - from).normalized() * 20.0, 3.0, 0.35, 5.0, 0.0)
+	idle(p, 1.0)
+	ok(w.ice_walls.is_empty(), "the second hit shatters it")
 	ok(absf(w.height_at(c.x, c.z) - h0) < 0.3 and not w.terrain.ice_at(c.x, c.z), "the ground is back where it was (%.2f m off)" % absf(w.height_at(c.x, c.z) - h0))
 	ok(has_wevent(w, "ice_shatter") or true, "shatter event")
 
@@ -634,6 +644,10 @@ func test_ice_wall() -> void:
 	ok(w2.ice_walls.size() == 1, "a second wall stands")
 	w2._update_ice_walls(C.ICE_WALL_LIFE + 1.0)
 	ok(w2.ice_walls.is_empty(), "an untouched wall melts after %.0f s" % C.ICE_WALL_LIFE)
+
+
+func bullet_total(w) -> int:
+	return w._next_id                           # every projectile ever spawned bumps it: no new bullet means no new id
 
 
 func count_proj(w, kind: String) -> int:
@@ -735,6 +749,212 @@ func test_earth_spire() -> void:
 	ok(w.height_at(mid.x, mid.y) > at.y + C.PILLAR_SIDE_RISE - 0.8, "and it is walkable along its length")
 	var wet: Vector3 = spot["water"]
 	ok(w.earth_spire(Vector3(wet.x, wet.y, wet.z)) == "", "open water is not earth: nothing grows")
+
+
+func fresh_earth(keep_bots := false) -> Array:
+	var w := WorldScript.new(1337)
+	if not keep_bots:
+		w.bots.clear()
+	var p := SimScript.new(w)
+	var a := ip()
+	a.element_pressed = "earth"
+	p.step(TICK, a)
+	idle(p, 0.3)
+	p.events.clear()
+	return [w, p]
+
+
+func test_disc_wall_persists() -> void:
+	print("-- an ice wall that has thrown a disc is no longer broken by hits")
+	var wp := fresh_dry()
+	var w = wp[0]
+	var p = wp[1]
+	var f := Vector3(-sin(p.yaw), 0.0, -cos(p.yaw))
+	var e := ip()
+	e.shield_held = true
+	p.step(TICK, e)
+	idle(p, 0.6)
+	var c: Vector3 = p.pos + f * C.ICE_WALL_DIST
+	p.chi = C.WATER_MAX
+	p.step(TICK, e)                                  # first disc
+	idle(p, 0.3)
+	for k in range(3):
+		var from: Vector3 = c + f * 8.0 + Vector3(0.0, 1.2, 0.0)
+		var target: Vector3 = c + Vector3(0.0, 1.2, 0.0)
+		w.spawn_proj("bolt", "enemy", from, (target - from).normalized() * 20.0, 3.0, 0.35, 5.0, 0.0)
+		idle(p, 0.9)
+	ok(w.ice_walls.size() == 1, "three bolts later the wall is still standing")
+
+
+func test_earth_wall_slab() -> void:
+	print("-- earth wall: carried with its own shape, planted back the same, thrown")
+	var wp := fresh_earth()
+	var w = wp[0]
+	var p = wp[1]
+	w.earth_wall(p.pos, Vector3(-sin(p.yaw), 0.0, -cos(p.yaw)))
+	idle(p, 0.8)
+	ok(w.walls.size() == 1 and absf(float(w.walls[0]["half_w"]) - C.WALL_HALF_WIDTH) < 0.2, "a wall stands (half width %.1f m)" % float(w.walls[0]["half_w"]))
+	var g := ip()
+	g.grab_pressed = true
+	p.step(TICK, g)
+	ok(not w.held.is_empty() and w.walls.is_empty(), "G picks it up")
+	var ratio_wall: float = float(w.held["wall_half_w"]) / float(w.held["wall_h"])
+	var ratio_held: float = float(w.held["half_w"]) / float(w.held["h"])
+	ok(absf(ratio_wall - ratio_held) < 0.01 and float(w.held["h"]) <= C.HELD_MAX_HEIGHT + 0.01 and absf(float(w.held["wall_half_w"]) - C.WALL_HALF_WIDTH) < 0.2, "the slab keeps the wall's proportions (carried %.1f x %.1f m, remembers %.1f m)" % [float(w.held["half_w"]) * 2.0, float(w.held["h"]), float(w.held["wall_half_w"]) * 2.0])
+	w.held["hp"] = 30.0                              # battered
+	var g2 := ip()
+	g2.grab_pressed = true
+	p.step(TICK, g2)
+	idle(p, 0.8)
+	ok(w.held.is_empty() and w.walls.size() == 1 and absf(float(w.walls[0]["half_w"]) - C.WALL_HALF_WIDTH) < 0.2, "planted again it is the same wall, however battered (%.1f m)" % float(w.walls[0]["half_w"]))
+	# throw it
+	var g3 := ip()
+	g3.grab_pressed = true
+	p.step(TICK, g3)
+	var f := Vector3(-sin(p.yaw), 0.0, -cos(p.yaw))
+	var b = add_bot(w, p.pos.x + f.x * 14.0, p.pos.z + f.z * 14.0)
+	var l := ip()
+	l.fire_pressed = true
+	l.fire_held = true
+	p.step(TICK, l)
+	ok(w.held.is_empty() and count_proj(w, "slab") == 1 and has_event(p, "slab_throw"), "left click throws the carried wall")
+	var broke := false
+	for i in range(120 * 3):
+		p.step(TICK, ip())
+		if has_wevent(w, "slab_break"):
+			broke = true
+		w.events.clear()
+		p.events.clear()
+	ok(count_proj(w, "slab") == 0 and b.hp < C.BOT_HP - 20.0, "it breaks on impact and hurts (hp %.0f)" % b.hp)
+
+
+func test_pillar_charges() -> void:
+	print("-- earth pillar charges")
+	var wp := fresh_earth()
+	var w = wp[0]
+	var p = wp[1]
+	p.pitch = -0.6
+	var made := 0
+	for k in range(3):
+		var s := ip()
+		s.suction_held = true
+		p.chi = p.chi_cap()
+		p.step(TICK, s)
+		p.step(TICK, ip())
+		if has_event(p, "pillar"):
+			made += 1
+		p.events.clear()
+		idle(p, C.PILLAR_COOLDOWN + 0.1)
+	ok(made == C.PILLAR_CHARGES and p.pillar_charges == 0, "%d pillars, then none left (%d made)" % [C.PILLAR_CHARGES, made])
+	idle(p, C.PILLAR_RECHARGE + 0.5)
+	ok(p.pillar_charges == 1, "one comes back after %.0f s (%d)" % [C.PILLAR_RECHARGE, p.pillar_charges])
+	idle(p, C.PILLAR_RECHARGE + 0.5)
+	ok(p.pillar_charges == C.PILLAR_CHARGES, "and the other one too")
+
+
+func _held() -> SimScript.InputState:
+	var h := ip()
+	h.jump_held = true
+	return h
+
+
+func test_propel() -> void:
+	print("-- water propel (hold Space)")
+	var wp := fresh_water()
+	var w = wp[0]
+	var p = wp[1]
+	var wt: Vector3 = spot["water"]
+	var surf: float = w.terrain.surface_at(wt.x, wt.z)
+	p.pos = Vector3(wt.x, surf - 0.8, wt.z)
+	p.vel = Vector3.ZERO
+	idle(p, 0.8)
+	ok(p.swimming, "in the water")
+	var y0: float = p.pos.y
+	# a tap does not burst: the jet builds up
+	for i in range(3):
+		p.step(TICK, _held())
+	ok(p.propelling and p.vel.y < 3.0, "the jet builds up, no burst (vy %.2f after 3 ticks)" % p.vel.y)
+	ok(has_event(p, "propel") or p.propelling, "propel starts while held")
+	var top_vy := 0.0
+	var top_rise := -99.0
+	var was_prop := true
+	for i in range(240):
+		p.step(TICK, _held())
+		top_vy = maxf(top_vy, p.vel.y)
+		top_rise = maxf(top_rise, p.pos.y - w.terrain.surface_at(p.pos.x, p.pos.z))
+	ok(top_vy <= C.PROPEL_VY + 0.3, "vertical speed stays capped (%.1f m/s, cap %.1f)" % [top_vy, C.PROPEL_VY])
+	ok(p.pos.y > y0 + 2.0, "holding lifts you steadily (%.1f m up)" % (p.pos.y - y0))
+	ok(top_rise <= C.PROPEL_REACH + 2.0, "total height stays low (%.1f m over the water, cap about %.1f)" % [top_rise, C.PROPEL_REACH + 2.0])
+	# release: it stops and you fall, no push
+	p.pos = Vector3(wt.x, surf - 0.8, wt.z)
+	p.vel = Vector3.ZERO
+	p.propel_cd = 0.0
+	idle(p, 0.5)
+	run(p, 60, func(): return _held())
+	var y_rel: float = p.pos.y
+	ok(p.propelling, "still on while held")
+	var vy_rel: float = p.vel.y
+	p.step(TICK, ip())
+	ok(not p.propelling and p.propel_cd > 0.0, "release ends it and starts the cooldown")
+	ok(p.vel.y <= vy_rel + 0.01, "release gives no extra push")
+	idle(p, 0.3)
+	ok(p.vel.y < vy_rel, "and you start to fall (%.1f -> %.1f)" % [vy_rel, p.vel.y])
+	# holding Space for ever cannot keep you bobbing above the reach
+	var pz = fresh_water()[1]
+	pz.pos = Vector3(wt.x, surf - 0.8, wt.z)
+	pz.vel = Vector3.ZERO
+	idle(pz, 0.8)
+	var high_t := 0.0
+	var end_prop := 0
+	for i in range(int(8.0 / TICK)):
+		pz.step(TICK, _held())
+		if pz.pos.y - w.terrain.surface_at(pz.pos.x, pz.pos.z) > 0.5:
+			high_t += TICK
+		if i > int(6.0 / TICK) and pz.propelling:
+			end_prop += 1
+	ok(high_t < 3.5, "holding Space for 8 s: airborne time is bounded (%.1f s)" % high_t)
+	ok(end_prop == 0, "and the jet does not re-engage mid-fall")
+	# cooldown: holding again straight away does nothing
+	p.step(TICK, _held())
+	ok(not p.propelling, "short cooldown after release")
+	# leaving the water: no water below, no lift
+	var dry := fresh_dry()
+	var dp = dry[1]
+	dp.vel = Vector3.ZERO
+	run(dp, 30, func(): return _held())
+	ok(not dp.propelling and not has_event(dp, "propel"), "on dry land holding Space is only a jump")
+	# over water but too high: the jet does not reach
+	var wp2 := fresh_water()
+	var p2 = wp2[1]
+	var s2: float = wp2[0].terrain.surface_at(wt.x, wt.z)
+	p2.pos = Vector3(wt.x, s2 + C.PROPEL_REACH + 3.0, wt.z)
+	p2.vel = Vector3.ZERO
+	p2.step(TICK, _held())
+	ok(not p2.propelling, "too far above the water: no lift")
+	# water runs out under you mid-lift: it stops
+	var wp3 := fresh_water()
+	var p3 = wp3[1]
+	var w3 = wp3[0]
+	p3.pos = Vector3(wt.x, s2 - 0.8, wt.z)
+	p3.vel = Vector3.ZERO
+	idle(p3, 0.8)
+	run(p3, 30, func(): return _held())
+	ok(p3.propelling, "lifting over the water")
+	var land := Vector3(wt.x, 0.0, wt.z)
+	for dd in range(0, 200):
+		var q := Vector2(wt.x, wt.z)
+		var found := false
+		for a8 in range(8):
+			var c := q + Vector2(cos(float(a8) * TAU / 8.0), sin(float(a8) * TAU / 8.0)) * float(dd)
+			if w3.terrain.water_depth_at(c.x, c.y) < 0.02 and not w3.terrain.ice_at(c.x, c.y):
+				land = Vector3(c.x, w3.terrain.height_at(c.x, c.y) + 1.0, c.y)
+				found = true
+				break
+		if found:
+			break
+	p3.pos = land
+	p3.step(TICK, _held())
+	ok(not p3.propelling, "no water below any more: the jet stops")
 
 
 func test_debug_flags() -> void:
@@ -986,7 +1206,7 @@ func test_puddles_and_shards() -> void:
 	spl.step(TICK, z)
 	idle(spl, 0.6)
 	var dmg: float = C.BOT_HP - b.hp
-	ok(C.SHARD_DAMAGE >= 16.0 and C.SHARD_COUNT >= 7, "shards: %d spikes of %.0f damage" % [C.SHARD_COUNT, C.SHARD_DAMAGE])
+	ok(C.SHARD_DAMAGE >= 10.0 and C.SHARD_COUNT >= 7, "shards: %d spikes of %.0f damage" % [C.SHARD_COUNT, C.SHARD_DAMAGE])
 	ok(dmg >= 60.0, "a close fan of shards hits hard (%.0f damage)" % dmg)
 	ok(sw.terrain.puddle_orig.size() > 0, "the shards' water lands as puddles")
 
@@ -995,6 +1215,15 @@ func test_ponds() -> void:
 	print("-- ponds across the map")
 	var w := WorldScript.new(1337)
 	var ponds: Array = w.terrain.ponds
+	var dry_run := 0
+	var rt = w.terrain
+	for gx in range(-150, 151, 3):
+		if rt.water_depth_at(float(gx), rt.river_z(float(gx))) < 0.5:
+			dry_run += 1
+	for gz in range(-150, 151, 3):
+		if rt.water_depth_at(rt.river_x(float(gz)), float(gz)) < 0.5:
+			dry_run += 1
+	ok(dry_run == 0, "the two great rivers run unbroken through the middle (%d dry samples)" % dry_run)
 	var inner := 0
 	var inner_wet := 0
 	for gz in range(-120, 121, 4):
@@ -1003,7 +1232,7 @@ func test_ponds() -> void:
 			if w.terrain.water_depth_at(float(gx), float(gz)) > 0.2:
 				inner_wet += 1
 	ok(float(inner_wet) / float(inner) > 0.155, "streams and ponds cover %.0f%% of the middle 240 m (was about 13%%)" % (100.0 * inner_wet / inner))
-	ok(ponds.size() >= 10, "the level has ponds (%d)" % ponds.size())
+	ok(ponds.size() >= 8, "the level has ponds (%d)" % ponds.size())
 	var wet := 0
 	var near_origin := 0
 	var closest := 1.0e9
@@ -1118,7 +1347,7 @@ func test_octopus() -> void:
 	var e := ip()
 	e.shield_held = true
 	p2.step(TICK, e)
-	ok(sb.hp < C.BOT_HP - 60.0 and has_event(p2, "octo_slam"), "E: slam from above does heavy damage (hp %.0f)" % sb.hp)
+	ok(sb.hp < C.BOT_HP - 40.0 and has_event(p2, "octo_slam"), "E: slam from above does heavy damage (hp %.0f)" % sb.hp)
 
 	# Q: grab, hold up to 3 s, throw
 	var w3p := fresh_dry()

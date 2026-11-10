@@ -48,6 +48,7 @@ func rebuild() -> void:
 	_waiting = ""
 	_slider("Mouse sensitivity", 0.2, 3.0, Settings.mouse_sens, func(v): Settings.mouse_sens = v; Settings.save())
 	_slider("Field of view", 70.0, 110.0, Settings.fov, func(v): Settings.fov = v; Settings.save())
+	_quality_row()
 	var group := ""
 	var actions: Array = Settings.ACTIONS + (Settings.DEBUG_ACTIONS if Settings.debug_enabled else [])
 	for a in actions:
@@ -57,6 +58,23 @@ func rebuild() -> void:
 			_list.add_child(head)
 		_add_row(String(a["id"]))
 	_list.add_child(UI.label("Fixed: left / right click and the mouse wheel, Esc (pause), F10 (quit), F11 (fullscreen).", 13, UI.DIM))
+
+
+# Graphics quality: Low (fastest) / Medium / High. It takes effect at once, also in a running game.
+func _quality_row() -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	var l := UI.label("Graphics quality", 16)
+	l.custom_minimum_size = Vector2(260.0, 0.0)
+	row.add_child(l)
+	var b := UI.button(Settings.QUALITY_NAMES[Settings.quality], Vector2(160.0, 38.0))
+	b.pressed.connect(func():
+		Settings.quality = (Settings.quality + 1) % 3
+		Settings.save()
+		b.text = Settings.QUALITY_NAMES[Settings.quality])
+	row.add_child(b)
+	row.add_child(UI.label("Low is the fastest: no shadows, shorter view distance.", 13, UI.DIM))
+	_list.add_child(row)
 
 
 func _slider(name: String, lo: float, hi: float, value: float, on_change: Callable) -> void:

@@ -25,5 +25,8 @@ func _init() -> void:
 				if d:
 					wet += 1
 		var sides: Array = w._duel_sides()
+		for s in sides:
+			var nw = t.nearest_water(s.x, s.y, 60.0)
+			print("  pad ", s, " nearest water ", "none within 60 m" if nw == null else "%.0f m" % Vector2(nw.x - s.x, nw.z - s.y).length())
 		print("seed %d: wet %.1f%% of map, %.1f%% of the middle 240 m, ponds %d, pads %s %s" % [sd, 100.0 * wet / float((n / 2) * (n / 2)), 100.0 * inner_wet / float(inner), t.ponds.size(), sides[0], sides[1]])
 	quit(0)
