@@ -525,7 +525,7 @@ func _rig_event(ev: Dictionary) -> void:
 			ar.trigger("slam", 0.8)
 		"whip":
 			ar.trigger("slash", 0.28)
-		"shards":
+		"shards", "disc_throw":
 			ar.trigger("thrust", 0.4)
 		"ice_wall", "heal":
 			ar.trigger("raise", 0.5)
@@ -584,6 +584,9 @@ func on_sim_event(ev: Dictionary, feet: Vector3) -> void:
 			var ds: Vector3 = ev["dir"]
 			ring(os + ds * 1.2, ds, 1.0, 0.3, 0.0, ICE, 0.2)
 			debris(os + ds * 1.2, 8, 6.0, 0.1, 0.6, 1.0, true)
+		"disc_throw":
+			var dd: Vector3 = ev["dir"]
+			ring(feet + Vector3(0, 1.5, 0) + dd * 1.4, dd, 1.2, 0.3, 0.0, ICE, 0.25)
 		"ice_wall":
 			if String(ev["what"]) == "freeze":
 				ring(feet + Vector3(0, 1.0, 0) + sim.look_dir() * 1.2, Vector3.UP, 2.4, 0.5, 0.0, ICE, 0.4)
@@ -598,6 +601,8 @@ func on_sim_event(ev: Dictionary, feet: Vector3) -> void:
 			add_pull(gsrc + Vector3(_rng.randf_range(-0.8, 0.8), 0.05, _rng.randf_range(-0.8, 0.8)),
 					Vector3(feet) + Vector3(0, 1.1, 0), 0.4, 0.2, false, false, true)
 			ring(gsrc + Vector3(0, 0.05, 0), Vector3.UP, 1.6, 0.4, 0.0, WATER, 0.2, Vector3.INF, 0.5)
+		"need_earth":
+			floating_text(feet + Vector3(0, 2.4, 0), "NEEDS EARTH", Color(1.0, 0.8, 0.5))
 		"need_water":
 			floating_text(feet + Vector3(0, 2.4, 0), "NO WATER NEAR", Color(1.0, 0.8, 0.5))
 		"tide":
@@ -832,6 +837,8 @@ func on_world_event(ev: Dictionary) -> void:
 			var kind: String = ev["kind"]
 			if kind == "shard":
 				debris(ev["pos"], 5, 5.0, 0.1, 0.4, 1.0, true)
+			elif kind == "disc":
+				debris(ev["pos"], 9, 7.0, 0.12, 0.6, 1.0, true)
 			var col2 := BOLT if kind == "bolt" else (EARTH if (kind == "rock" or kind == "boulder") else AIR)
 			ring(ev["pos"], Vector3.UP, 1.1, 0.25, 0.0, col2, 0.2)
 			if kind == "rock":
@@ -887,6 +894,9 @@ func on_world_event(ev: Dictionary) -> void:
 			var iw: Vector3 = ev["pos"]
 			ring(iw + Vector3(0, 0.12, 0), Vector3.UP, C.ICE_WALL_HALF_WIDTH * 1.3, 0.45, 0.0, ICE, 0.4, Vector3.INF, 0.6)
 			debris(iw + Vector3(0, 1.0, 0), 14, 7.0, 0.16, C.ICE_WALL_HALF_WIDTH * 0.5, 1.0, true)
+		"ice_discs":
+			var idp: Vector3 = ev["pos"]
+			debris(idp, 12, 7.0, 0.14, C.ICE_WALL_HALF_WIDTH * 0.5, 1.0, true)
 		"ice_shatter":
 			var sh: Vector3 = ev["pos"]
 			ring(sh + Vector3(0, 0.3, 0), Vector3.UP, C.ICE_WALL_HALF_WIDTH * 1.2, 0.4, 0.0, ICE, 0.4, Vector3.INF, 0.7)
@@ -1257,6 +1267,13 @@ func _make_proj_node(p) -> Node3D:
 			var sc := _inst(_shard_mesh, _shard_mat)        # a sharp four-sided ice spike, point first
 			sc.scale = Vector3(1.0, 1.0, 1.25)
 			n.add_child(sc)
+		"disc":                                           # a spinning saucer of ice
+			var dsc := _inst(_sphere_mesh, _shard_mat)
+			dsc.scale = Vector3(1.0, 0.1, 1.0) * 0.95
+			n.add_child(dsc)
+			var rim := _inst(_sphere_mesh, _flat(Color(0.7, 0.9, 1.0), 0.35))
+			rim.scale = Vector3(1.25, 0.05, 1.25) * 0.95
+			n.add_child(rim)
 		"rock", "boulder":
 			var rm := StandardMaterial3D.new()
 			rm.albedo_color = Color(0.45, 0.36, 0.27)
@@ -1297,6 +1314,8 @@ func _sync_projectiles() -> void:
 		n.look_at_from_position(p.pos, p.pos + dir, up)
 		if String(p.kind) == "slice":
 			n.rotate_object_local(Vector3.FORWARD, p.roll)
+		elif String(p.kind) == "disc":
+			n.rotate_object_local(Vector3.UP, _time * 30.0)
 		elif String(p.kind) == "punch":
 			n.scale = Vector3.ONE * (1.0 + 0.12 * sin(_time * 40.0))
 		elif String(p.kind) == "rock" or String(p.kind) == "boulder":

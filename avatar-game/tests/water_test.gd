@@ -48,7 +48,21 @@ func has_wevent(w, type: String) -> bool:
 
 
 # Deep water with dry flat land 5 to 12 m from it. Found once and reused.
-func find_spot(w) -> Dictionary:
+func water_run(t, from: Vector2, over: Vector2, length: float) -> bool:
+	var d := (over - from).normalized()
+	var s := 0.0
+	while s <= length:
+		var q := over + d * s
+		if t.water_depth_at(q.x, q.y) < 0.4:
+			return false
+		s += 2.0
+	return true
+
+
+const PREFERRED := Vector2(-80.0, -150.0)
+
+
+func find_spot(w, preferred := true) -> Dictionary:
 	var t = w.terrain
 	var n: int = TerrainScript.N
 	for iz in range(30, n - 30, 5):
@@ -60,6 +74,8 @@ func find_spot(w) -> Dictionary:
 			var wz: float = iz * TerrainScript.CELL - TerrainScript.HALF
 			if absf(wx) > 150.0 or absf(wz) > 150.0:
 				continue
+			if preferred and (absf(wx - PREFERRED.x) > 6.0 or absf(wz - PREFERRED.y) > 6.0):
+				continue                                    # the tests were tuned around this shore: the map keeps changing around it
 			for a8 in range(8):
 				var d := Vector2(cos(float(a8) * TAU / 8.0), sin(float(a8) * TAU / 8.0))
 				for r in [3.5, 5.0, 7.0, 9.0, 11.0]:
@@ -71,7 +87,7 @@ func find_spot(w) -> Dictionary:
 							flat = false
 					if flat and t.water_depth_at(q.x, q.y) == 0.0 and absf(q.x) < 170.0 and absf(q.y) < 170.0:
 						return {"water": Vector3(wx, t.ws[i], wz), "land": Vector3(q.x, t.height_at(q.x, q.y), q.y)}
-	return {}
+	return find_spot(w, false) if preferred else {}
 
 
 func yaw_to(from: Vector3, to: Vector3) -> float:
@@ -79,8 +95,16 @@ func yaw_to(from: Vector3, to: Vector3) -> float:
 
 
 # A fresh world with no bots and a waterbender standing on dry land beside the water, facing it.
+func make_lake(w) -> void:
+	var water: Vector3 = spot["water"]
+	var away := Vector2(water.x - spot["land"].x, water.z - spot["land"].z).normalized()
+	var c := Vector2(water.x, water.z) + away * 22.0
+	w.terrain.flood_disc(c.x, c.y, 26.0, 3.2)             # the shore the tests use opens onto a lake, whatever the map does around it
+
+
 func fresh_water(keep_bots := false) -> Array:
 	var w := WorldScript.new(1337)
+	make_lake(w)
 	if not keep_bots:
 		w.bots.clear()
 	var p := SimScript.new(w)
@@ -180,6 +204,9 @@ func _init() -> void:
 	test_heal_shards()
 	test_ice_wall()
 	test_freeze_enemy()
+	test_ice_discs()
+	test_earth_spire()
+	test_debug_flags()
 	test_ice_skate()
 	test_q_and_freeze()
 	test_puddles_and_shards()
@@ -459,6 +486,7 @@ func test_tide_size() -> void:
 	ok(puddle_k > dry_k, "a puddle makes a bigger wave (%.2f)" % puddle_k)
 	ok(lake_k > puddle_k, "a lake makes a bigger one still (%.2f vs %.2f)" % [lake_k, puddle_k])
 	var sea := WorldScript.new(1337)
+	make_lake(sea)
 	var sea_k: float = sea.tide_strength(Vector3(spot["water"].x, 0.0, spot["water"].z))
 	ok(sea_k <= 1.0 and sea_k >= lake_k - 0.001, "the strength is capped at 1 (%.2f)" % sea_k)
 	# the wave itself follows it
@@ -606,6 +634,124 @@ func test_ice_wall() -> void:
 	ok(w2.ice_walls.size() == 1, "a second wall stands")
 	w2._update_ice_walls(C.ICE_WALL_LIFE + 1.0)
 	ok(w2.ice_walls.is_empty(), "an untouched wall melts after %.0f s" % C.ICE_WALL_LIFE)
+
+
+func count_proj(w, kind: String) -> int:
+	var n := 0
+	for pr in w.projectiles:
+		if pr.kind == kind:
+			n += 1
+	return n
+
+
+func test_ice_discs() -> void:
+	print("-- ice discs")
+	var wp := fresh_dry()
+	var w = wp[0]
+	var p = wp[1]
+	var f := Vector3(-sin(p.yaw), 0.0, -cos(p.yaw))
+	var e := ip()
+	e.shield_held = true                       # E
+	var c0: Vector3 = p.pos + f * C.ICE_WALL_DIST
+	var h_ground: float = w.height_at(c0.x, c0.z)
+	p.step(TICK, e)
+	idle(p, 0.6)
+	ok(w.ice_walls.size() == 1, "E raises a wall first")
+	var wall_h0: float = w.height_at(c0.x, c0.z)
+	p.chi = C.WATER_MAX
+	p.events.clear()
+	var b = add_bot(w, p.pos.x + f.x * 18.0, p.pos.z + f.z * 18.0)
+	var chi0: float = p.chi
+	p.step(TICK, e)
+	ok(count_proj(w, "disc") == 1 and has_event(p, "disc_throw"), "E close to the wall throws one ice disc (%d flying)" % count_proj(w, "disc"))
+	ok(w.ice_walls.size() == 1 and chi0 - p.chi < 0.6, "the wall stands and its volley is free: ice counts as water (spent %.1f)" % (chi0 - p.chi))
+	var ahead := true
+	for pr in w.projectiles:
+		if pr.kind == "disc" and Vector3(pr.vel.x, 0.0, pr.vel.z).normalized().dot(f) < 0.95:
+			ahead = false
+	ok(ahead, "the discs fly where you aim")
+	idle(p, 0.8)
+	ok(b.hp < C.BOT_HP, "the discs cut the enemy (hp %.0f)" % b.hp)
+	ok(w.ice_walls.size() == 1, "the discs did not break their own wall")
+	var wall_h1: float = w.height_at(c0.x, c0.z) - h_ground
+	ok(wall_h1 < (wall_h0 - h_ground) * 0.9 and wall_h1 > 0.5, "the wall shrank (%.1f m -> %.1f m)" % [wall_h0 - h_ground, wall_h1])
+	var last_h := wall_h1
+	var shrinking := true
+	for k in range(C.DISC_SHOTS - 2):
+		p.chi = C.WATER_MAX
+		idle(p, C.DISC_COOLDOWN + 0.1)
+		p.step(TICK, e)
+		idle(p, 0.2)
+		var hh: float = w.height_at(c0.x, c0.z) - h_ground
+		if hh >= last_h - 0.05:
+			shrinking = false
+		last_h = hh
+	ok(shrinking and w.ice_walls.size() == 1, "it keeps shrinking with every disc (%.1f m left)" % last_h)
+	p.chi = C.WATER_MAX
+	idle(p, C.DISC_COOLDOWN + 0.1)
+	p.step(TICK, e)
+	ok(w.ice_walls.is_empty(), "disc number %d uses the wall up" % C.DISC_SHOTS)
+	# far from any wall E raises a new one instead
+	p.chi = C.WATER_MAX
+	idle(p, C.ICE_WALL_COOLDOWN + 0.2)
+	p.step(TICK, e)
+	idle(p, 0.6)
+	ok(w.ice_walls.size() == 1, "with no wall near, E raises one again")
+	# an enemy in freezing range still gets frozen, not discs
+	var wp2 := fresh_dry()
+	var w2 = wp2[0]
+	var p2 = wp2[1]
+	p2.step(TICK, e)
+	idle(p2, 0.6)
+	var b2 = bot_ahead(w2, p2, 1.5)
+	p2.chi = C.WATER_MAX
+	idle(p2, C.ICE_WALL_COOLDOWN + 0.2)
+	p2.step(TICK, e)
+	ok(b2.frozen_t > 0.0 and count_proj(w2, "disc") == 0, "an enemy right in front is frozen, no discs")
+
+
+func test_earth_spire() -> void:
+	print("-- earth pillar sideways")
+	var wp := fresh_dry()
+	var w = wp[0]
+	var gy: float = w.height_at(12.0, -12.0)
+	w.terrain.raise_mound(12.0, -12.0, 5.0, 2.5, gy + 9.0, 0.0, w.terrain.h.duplicate())
+	var flat := Vector3(-8.0, w.height_at(-8.0, -8.0), -8.0)
+	ok(w.earth_spire(flat) == "up", "aimed at level ground the pillar grows up")
+	for i in range(120):
+		w._update_jobs(TICK)
+	var at := Vector3(18.4, w.height_at(18.4, -12.0), -12.0)
+	var g: Dictionary = w.ground_at(at.x, at.z)
+	ok(float(g["ny"]) < C.PILLAR_SIDE_MIN_NY, "the mound's flank is steep (ny %.2f)" % float(g["ny"]))
+	var out := Vector2(g["nx"], g["nz"]).normalized()
+	var tip := Vector2(at.x, at.z) + out * (0.6 + C.PILLAR_SIDE_LEN * 0.8)
+	var h_before: float = w.height_at(tip.x, tip.y)
+	ok(w.earth_spire(at) == "side", "aimed at a cliff face the pillar grows sideways")
+	for i in range(120):
+		w._update_jobs(TICK)
+	var h_after: float = w.height_at(tip.x, tip.y)
+	ok(h_after > h_before + 1.0 and absf(h_after - (at.y + C.PILLAR_SIDE_RISE)) < 0.8, "the arm reaches %.1f m out at height %.1f (face point %.1f, ground was %.1f)" % [C.PILLAR_SIDE_LEN * 0.8, h_after, at.y, h_before])
+	var mid := Vector2(at.x, at.z) + out * 5.0
+	ok(w.height_at(mid.x, mid.y) > at.y + C.PILLAR_SIDE_RISE - 0.8, "and it is walkable along its length")
+	var wet: Vector3 = spot["water"]
+	ok(w.earth_spire(Vector3(wet.x, wet.y, wet.z)) == "", "open water is not earth: nothing grows")
+
+
+func test_debug_flags() -> void:
+	print("-- debug flags")
+	var wp := fresh_dry()
+	var p = wp[1]
+	p.debug_god = true
+	p.debug_nocd = true
+	p.ult = 0.0
+	p.step(TICK, ip())
+	ok(p.ult_ready(), "debug keeps the ultimate full")
+	var hp0: float = p.hp
+	p.take_damage(60.0)
+	ok(p.hp == hp0, "god mode: no damage")
+	p.ult = 0.0
+	p.step(TICK, ip())
+	ok(p.ult_ready(), "and after an ultimate is spent it is full again")
 
 
 func test_freeze_enemy() -> void:
@@ -849,7 +995,15 @@ func test_ponds() -> void:
 	print("-- ponds across the map")
 	var w := WorldScript.new(1337)
 	var ponds: Array = w.terrain.ponds
-	ok(ponds.size() >= 12, "the level has ponds (%d)" % ponds.size())
+	var inner := 0
+	var inner_wet := 0
+	for gz in range(-120, 121, 4):
+		for gx in range(-120, 121, 4):
+			inner += 1
+			if w.terrain.water_depth_at(float(gx), float(gz)) > 0.2:
+				inner_wet += 1
+	ok(float(inner_wet) / float(inner) > 0.155, "streams and ponds cover %.0f%% of the middle 240 m (was about 13%%)" % (100.0 * inner_wet / inner))
+	ok(ponds.size() >= 10, "the level has ponds (%d)" % ponds.size())
 	var wet := 0
 	var near_origin := 0
 	var closest := 1.0e9

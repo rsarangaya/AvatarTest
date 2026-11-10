@@ -42,6 +42,7 @@ var _low := FastNoiseLite.new()     # the first octave of _noise on its own: the
 var _basin := FastNoiseLite.new()
 var _mtn := FastNoiseLite.new()
 var _riv := FastNoiseLite.new()
+var _riv2 := FastNoiseLite.new()    # a second, finer stream network
 var _warp := FastNoiseLite.new()
 var _rs := PackedFloat32Array()     # river surface candidate per vertex (only while generating)
 var _rg := PackedFloat32Array()     # how much each vertex belongs to a river valley (0..1)
@@ -73,6 +74,9 @@ func generate(seed_value: int) -> void:
 	_riv.seed = seed_value + 31
 	_riv.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	_riv.frequency = 1.0 / 110.0
+	_riv2.seed = seed_value + 53
+	_riv2.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	_riv2.frequency = 1.0 / 66.0
 	_warp.seed = seed_value + 41
 	_warp.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	_warp.frequency = 1.0 / 70.0
@@ -98,11 +102,11 @@ func generate(seed_value: int) -> void:
 			var e := maxf(absf(x), absf(z))
 			# rivers: valleys cut by warped noise, only on low ground, fading out towards the highlands, the
 			# training meadow and the sea
-			var gate := C.ss(55.0, 82.0, d) * (1.0 - C.ss(SEA_Y + 7.0, SEA_Y + 20.0, _glow(x, z))) * (1.0 - C.ss(150.0, 182.0, e))
+			var gate := C.ss(48.0, 74.0, d) * (1.0 - C.ss(SEA_Y + 7.0, SEA_Y + 20.0, _glow(x, z))) * (1.0 - C.ss(150.0, 182.0, e))
 			if gate > 0.001:
 				var wx := x + _warp.get_noise_2d(x, z) * 34.0
 				var wz := z + _warp.get_noise_2d(z + 400.0, x - 400.0) * 34.0
-				var f := absf(_riv.get_noise_2d(wx, wz))
+				var f := minf(absf(_riv.get_noise_2d(wx, wz)), absf(_riv2.get_noise_2d(wx, wz)) + 0.012 +C.ss(110.0, 135.0, e))   # main rivers plus a finer network through the middle
 				var valley := (1.0 - C.ss(0.05, 0.22, f)) * gate
 				var core := (1.0 - C.ss(0.022, 0.07, f)) * gate
 				if valley > 0.0:
@@ -831,6 +835,23 @@ func tint_wall_cells(orig: PackedFloat32Array, ix0: int, iz0: int, ix1: int, iz1
 				n += 1
 	_touch_cells(ix0, iz0, ix1, iz1)
 	return n
+
+
+# The wall gives up part of itself (a disc was cut from it): what stands above the old ground shrinks by `keep` (0..1).
+func shrink_wall(orig: PackedFloat32Array, ix0: int, iz0: int, ix1: int, iz1: int, keep: float) -> void:
+	ix0 = clampi(ix0, 0, N - 1)
+	ix1 = clampi(ix1, 0, N - 1)
+	iz0 = clampi(iz0, 0, N - 1)
+	iz1 = clampi(iz1, 0, N - 1)
+	for iz in range(iz0, iz1 + 1):
+		for ix in range(ix0, ix1 + 1):
+			var i := iz * N + ix
+			if ice[i] == 2 and h[i] > orig[i]:
+				h[i] = orig[i] + (h[i] - orig[i]) * keep
+				if h[i] - orig[i] <= 0.35:
+					h[i] = orig[i]
+					ice[i] = 0
+	_mark(ix0, iz0, ix1, iz1)
 
 
 # The wall shatters: its cells drop back to the ground they came from, and the ice tint goes with them.

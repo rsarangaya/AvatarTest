@@ -246,6 +246,10 @@ const PILLAR_HEIGHT := 6.5
 const PILLAR_DUR := 0.3
 const PILLAR_R_TOP := 1.7
 const PILLAR_R_FLANK := 2.4
+const PILLAR_SIDE_MIN_NY := 0.8           # aimed at ground steeper than this (a cliff, wall or pillar flank) the pillar grows sideways
+const PILLAR_SIDE_LEN := 11.0             # length of a sideways pillar
+const PILLAR_SIDE_RISE := 1.2             # its flat top sits this far above the point you aimed at
+const PILLAR_SIDE_DUR := 0.5
 const PILLAR_BOT_LAUNCH := 13.0
 const PILLAR_BOT_DAMAGE := 40.0
 const LIFT_LAUNCH_RATE := 8.0            # ground rising faster than this (m/s) throws you instead of carrying you
@@ -430,7 +434,7 @@ const SHARD_KNOCKBACK := 6.0
 const FREEZE_THAW_RADIUS := 9.0
 const FREEZE_DRY_GRACE := 1.5            # the freeze switches itself off this long after the last water or ice is behind you
 
-const POND_COUNT := 16                   # ponds and small lakes carved into the level (the middle of the map included)
+const POND_COUNT := 24                # ponds and small lakes carved into the level (the middle of the map included)
 
 # ---- Water you spend lands on the ground as puddles you can gather again (and that count as water for free moves)
 const PUDDLE_LIFE := 180.0               # seconds before a puddle dries up (natural water never does)
@@ -455,7 +459,17 @@ const ICE_WALL_DIST := 3.6
 const ICE_WALL_HALF_WIDTH := 3.4
 const ICE_WALL_HEIGHT := 3.4
 const ICE_WALL_DUR := 0.2
-const ICE_WALL_LIFE := 25.0              # an untouched ice wall melts away after this long
+# Ice discs: press E close to your own standing ice wall and it throws spinning discs of ice (Katara against Pakku)
+const DISC_NEAR := 8.0                    # how close you must be to the wall (metres to its nearest point)
+const DISC_COST := 7.0                    # one disc per press
+const DISC_COOLDOWN := 0.45
+const DISC_SHOTS := 4                     # a wall gives this many discs; it shrinks with every one and is gone after the last
+const DISC_SPEED := 62.0
+const DISC_LIFE := 1.5
+const DISC_RADIUS := 0.95
+const DISC_DAMAGE := 40.0
+const DISC_KNOCKBACK := 9.0
+const ICE_WALL_LIFE := 25.0             # an untouched ice wall melts away after this long
 const ICE_FREEZE_RANGE := 1.9            # about 6 ft
 const ICE_FREEZE_COS := 0.55
 const ICE_FREEZE_TIME := 3.0

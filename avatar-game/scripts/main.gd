@@ -28,6 +28,8 @@ var prev_pos := Vector3.ZERO
 var respawn_queued := false
 const ROUND_DELAY := 5.0
 var round_label: Label
+var debug_label: Label             # small tag while the hidden debug mode is on (flashes big when it is switched)
+var debug_flash := 0.0
 var round_t := 0.0                 # seconds until a duel round starts (the fighters are frozen until then)
 var round_msg := ""
 var clock := 0.0
@@ -254,6 +256,13 @@ func _build_hud() -> void:
 	round_label.visible = false
 	root.add_child(round_label)
 
+	debug_label = _make_label(22)
+	debug_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	debug_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+	_anchor(debug_label, 0.5, 0.0, -300.0, 8.0, 300.0, 40.0)
+	debug_label.visible = false
+	root.add_child(debug_label)
+
 	charge_bar = _make_bar(Color(0.85, 0.97, 1.0), 1.0)
 	_anchor(charge_bar, 0.5, 0.5, -60.0, 34.0, 60.0, 42.0)
 	charge_bar.visible = false
@@ -410,6 +419,7 @@ func _quit_to_menu() -> void:
 func _apply_debug() -> void:
 	sim.debug_god = Settings.debug_enabled
 	sim.debug_nocd = Settings.debug_enabled
+	debug_flash = 2.5
 	if pause_sub is OptionsUI:
 		(pause_sub as OptionsUI).rebuild()
 
@@ -706,6 +716,12 @@ func _update_hud(dt: float) -> void:
 			round_label.text = "DUEL STARTS IN %d" % int(ceil(round_t))
 		else:
 			round_label.text = "%s\nnext round in %d" % [round_msg, int(ceil(round_t))]
+	debug_flash = maxf(0.0, debug_flash - dt)
+	debug_label.visible = Settings.debug_enabled or debug_flash > 0.0
+	if debug_flash > 0.0:
+		debug_label.text = "DEBUG MODE ON: god mode, no cooldowns, unlimited ultimates" if Settings.debug_enabled else "DEBUG MODE OFF"
+	else:
+		debug_label.text = "DEBUG"
 	speed_label.text = "%.1f m/s" % sim.speed()
 	state_label.text = sim.state_name()
 	var eye_y: float = sim.pos.y + sim.eye_height()
@@ -744,7 +760,7 @@ func _update_hud(dt: float) -> void:
 		var kq := Settings.key_name("ability_q")
 		var ke := Settings.key_name("ability_e")
 		hints_label.text = ("OCTOPUS:  LMB left arm   RMB right arm   %s slam   %s grab / throw" % [ke, kq] if sim.octo_t > 0.0 \
-				else "LMB whip / hold jet   RMB heal   %s ice shards   %s ice wall   %s ice skate   %s freeze%s   hold %s gather   %s tap octopus / hold wave" \
+				else "LMB whip / hold jet   RMB heal   %s ice shards   %s ice wall, again near it: discs   %s ice skate   %s freeze%s   hold %s gather   %s tap octopus / hold wave" \
 				% [Settings.key_name("ability_z"), ke, kq, Settings.key_name("ability_freeze"), " (ON)" if sim.freezing else "", Settings.key_name("ability_f"), Settings.key_name("ultimate")])
 	else:
 		hints_label.text = ("LMB rock/wave  RMB boulder  Z barrage  Q skate  E wall  G grab  F pillar  V armor  hold Space at wall: elevator  X ult" if earth \

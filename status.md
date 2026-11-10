@@ -31,7 +31,13 @@ Enter **Up Up Down Down Left Right Left Right B A** on the menus or in a game (e
 **Melee:** out of chi / water, 3-hit combo on LMB, heavy strike on RMB.
 **World:** 400 m map with sea and rivers, destructible terrain that slowly heals, bots (dummies, benders, a one-on-one duel enemy).
 
-### Changes in the latest round (2026-11-09, later)
+### Changes in the newest round (2026-11-09, latest)
+- **Ice discs (offensive):** press **E** close to your own standing ice wall (within 8 m) and it throws **one spinning ice disc** where you aim (40 damage, goes through enemies, free near ice). A wall gives **4 discs** and **shrinks with every one** (3/4, 2/3, 1/2 of its height, then the 4th uses it up). An enemy right in front still gets frozen instead.
+- **Earth pillar, any surface:** aim at level ground and it grows up as before; aim at a cliff, a wall or the side of another pillar and it grows **out sideways** (11 m flat-topped arm, walkable; chain them into bridges and stairs). It needs earth: open water fizzles ("NEEDS EARTH"). Ground has no overhangs, so a sideways arm fills down to the ground beneath it.
+- **More water in the middle:** a second, finer stream network plus more ponds. About 17-20% of the middle 240 m is water now (was about 13%). The outer map is unchanged.
+- **Debug mode:** the ultimate now stays full while it is on (unlimited ults) and god mode keeps health full. A banner shows when it switches on or off and a small DEBUG tag stays while it is on. Cause of "did nothing" for you was not found: if no banner shows when you type the code, tell me where you typed it.
+
+### Changes in the previous round (2026-11-09, later)
 - **Ice shards much stronger:** 7 spikes of 19 damage in a tight fan (a close fan does 100+), faster cooldown, faster spikes.
 - **Q is the ice skate only.** It never freezes anything. You glide fast over ice and over open water (no swimming). It still needs water or ice within 4 m.
 - **T is a new freeze / unfreeze toggle** (rebindable): while on, water around and ahead of you turns to ice as you move; press again to turn it off and thaw the ice around you (9 m). The debug ult key moved to **Y** (G and T are taken). Old saved key files are fixed up automatically if they clash.

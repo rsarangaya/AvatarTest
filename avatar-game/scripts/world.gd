@@ -258,7 +258,7 @@ func _build_level() -> void:
 			continue
 		var pok := true
 		for q in pond_spots:
-			if q.distance_to(pc) < 30.0:
+			if q.distance_to(pc) < 24.0:
 				pok = false
 		for lmk in landmarks:
 			if lmk.distance_to(pc) < 40.0:
@@ -708,6 +708,34 @@ func earth_pillar(at: Vector3, height: float = C.PILLAR_HEIGHT, dur: float = C.P
 	for b in _bots_in_circle(at, C.PILLAR_R_TOP + C.PILLAR_R_FLANK * 0.6):
 		damage_bot(b, C.PILLAR_BOT_DAMAGE, Vector3.ZERO)
 	events.append({"type": "earth_rise", "pos": Vector3(at.x, gy, at.z), "radius": C.PILLAR_R_TOP + C.PILLAR_R_FLANK})
+
+
+# Earth Pillar that grows out of whatever earth you aim at, along the surface: up from level ground, out sideways from a
+# cliff face, a wall or the flank of another pillar (so pillars chain into bridges and stairs). Returns "up", "side" or
+# "" when the aim point is not earth (open water). The ground has no overhangs, so a sideways arm is a flat-topped
+# buttress that fills down to the ground below it.
+func earth_spire(at: Vector3) -> String:
+	if terrain.water_depth_at(at.x, at.z) > 0.3:
+		return ""
+	var g := ground_at(at.x, at.z)
+	var ny: float = g["ny"]
+	if ny >= C.PILLAR_SIDE_MIN_NY:
+		earth_pillar(at)
+		return "up"
+	var out := Vector2(g["nx"], g["nz"])
+	out = out.normalized() if out.length() > 0.01 else Vector2(0.0, -1.0)
+	var a := Vector2(at.x, at.z) + out * 0.6
+	var b := a + out * C.PILLAR_SIDE_LEN
+	var top: float = at.y + C.PILLAR_SIDE_RISE
+	jobs.append({"kind": "ridge", "a": a, "b": b, "w_top": C.PILLAR_R_TOP, "w_flank": C.PILLAR_R_FLANK,
+			"ya0": terrain.height_at(a.x, a.y), "ya1": top, "yb0": terrain.height_at(b.x, b.y), "yb1": top,
+			"t": 0.0, "dur": C.PILLAR_SIDE_DUR, "rough": 0.35, "orig": terrain.h.duplicate()})
+	for k in range(3):
+		var q := a.lerp(b, float(k) / 2.0)
+		events.append({"type": "earth_rise", "pos": Vector3(q.x, top, q.y), "radius": C.PILLAR_R_TOP + C.PILLAR_R_FLANK})
+	for bt in _bots_in_circle(Vector3(b.x, 0.0, b.y), C.PILLAR_R_TOP + C.PILLAR_R_FLANK * 0.6):
+		damage_bot(bt, C.PILLAR_BOT_DAMAGE, Vector3.ZERO)
+	return "side"
 
 
 # A wall across your path: permanent, blocks bolts, can be climbed, cut with slices or blown apart.
@@ -1434,6 +1462,71 @@ func ice_wall(origin: Vector3, fwd: Vector3, caster: Bot = null) -> String:
 			"t": 0.0, "dur": C.ICE_WALL_DUR, "orig": terrain.h.duplicate()})
 	events.append({"type": "ice_wall_rise", "pos": Vector3(c.x, terrain.height_at(c.x, c.y), c.y), "a": a, "b": b2})
 	return "wall"
+
+
+# True when an enemy stands where E would freeze them (about 6 ft in front).
+func freeze_target_near(origin: Vector3, fwd: Vector3, caster: Bot = null) -> bool:
+	var f := Vector2(fwd.x, fwd.z)
+	f = f.normalized() if f.length() > 0.01 else Vector2(0.0, -1.0)
+	for b in bots:
+		if not b.alive or b == caster:
+			continue
+		var rel := Vector2(b.pos.x - origin.x, b.pos.z - origin.z)
+		var dist := rel.length()
+		if dist > C.ICE_FREEZE_RANGE + C.BOT_RADIUS or absf(b.pos.y - origin.y) > 2.2:
+			continue
+		if dist > 0.4 and rel.normalized().dot(f) < C.ICE_FREEZE_COS:
+			continue
+		return true
+	return false
+
+
+# Index of the standing ice wall nearest to `at` within `radius` (distance to the wall itself), or -1.
+func ice_wall_near(at: Vector3, radius: float) -> int:
+	var best := -1
+	var best_d := radius
+	var q := Vector2(at.x, at.z)
+	for k in range(ice_walls.size()):
+		var a: Vector2 = ice_walls[k]["a"]
+		var b: Vector2 = ice_walls[k]["b"]
+		var ab := b - a
+		var t := clampf((q - a).dot(ab) / maxf(ab.length_squared(), 0.0001), 0.0, 1.0)
+		var d := (q - (a + ab * t)).length() - float(ice_walls[k]["w"])
+		if d < best_d:
+			best_d = d
+			best = k
+	return best
+
+
+# The wall throws one ice disc along `dir`, from the face that looks the way it flies. The wall shrinks with every disc and
+# the last one uses it up.
+func ice_discs(wall: int, from: Vector3, dir: Vector3, team: String, dmg: float, shooter: Bot = null) -> int:
+	var w: Dictionary = ice_walls[wall]
+	var a: Vector2 = w["a"]
+	var b: Vector2 = w["b"]
+	var ab := b - a
+	var tang := ab.normalized() if ab.length() > 0.01 else Vector2(1.0, 0.0)
+	var mid := (a + b) * 0.5
+	var nrm := Vector2(-tang.y, tang.x)
+	if nrm.dot(Vector2(dir.x, dir.z)) < 0.0:
+		nrm = -nrm                                       # the face the discs fly away from: they never pass through the wall
+	var out := float(w["w"]) + 0.9
+	var along := clampf((Vector2(from.x, from.z) - mid).dot(tang), -ab.length() * 0.4, ab.length() * 0.4)   # cut from the part of the wall nearest you
+	var xy := mid + tang * along + nrm * out
+	var y: float = maxf(terrain.height_at(xy.x, xy.y), terrain.surface_at(xy.x, xy.y)) + 1.5
+	spawn_proj("disc", team, Vector3(xy.x, y, xy.y), dir.normalized() * C.DISC_SPEED, C.DISC_LIFE, C.DISC_RADIUS,
+			dmg, C.DISC_KNOCKBACK, true, 0.0, shooter)
+	var left: int = C.DISC_SHOTS - int(w.get("shots", 0))
+	w["shots"] = int(w.get("shots", 0)) + 1
+	events.append({"type": "ice_discs", "pos": Vector3(xy.x, y, xy.y), "dir": dir})
+	if left <= 1:
+		_shatter_ice_wall(wall, false)                   # the last disc takes the rest of the wall
+		return 1
+	var keep := float(left - 1) / float(left)            # the wall gives up a share of itself with every disc
+	terrain.shrink_wall(w["orig"], w["ix0"], w["iz0"], w["ix1"], w["iz1"], keep)
+	w["a"] = mid + (a - mid) * keep
+	w["b"] = mid + (b - mid) * keep
+	return 1
 
 
 func _register_ice_wall(j: Dictionary) -> void:

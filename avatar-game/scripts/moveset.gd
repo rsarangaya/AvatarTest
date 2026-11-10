@@ -51,7 +51,7 @@ const NATIONS := {
 				[["@ability_e"], "EARTH WALL: big, permanent, blocks bolts."],
 				[["@ability_g"], "GRAB the nearest wall to carry it as a shield. Press again to plant it."],
 				[["@ability_v"], "EARTH ARMOR on / off: soaks damage but slows you."],
-				[["@ability_f"], "EARTH PILLAR where you aim: hurts, throws enemies up (they take fall damage). Look at your feet to ride one."],
+				[["@ability_f"], "EARTH PILLAR where you aim: hurts, throws enemies up (they take fall damage). Look at your feet to ride one. Aim at a cliff, wall or the side of a pillar and it grows out sideways instead, so you can chain bridges and stairs. It needs earth: not open water."],
 			]},
 			{"title": "Ultimate", "entries": [
 				[["@ultimate"], "EARTH CLAP on the ground: two slabs rise either side of the target and slam together. 8 m or more up: EARTHQUAKE DIVE, land and the ground shakes."],
@@ -76,7 +76,7 @@ const NATIONS := {
 				[["@ability_z"], "ICE SHARDS: a tight fan of seven pointed spikes. A close fan hits very hard."],
 				[["@ability_q"], "ICE SKATE on / off. Needs water or ice nearby. You glide fast over ice and over open water (no swimming). It ends when no water or ice is left near you. It never freezes anything by itself."],
 				[["@ability_freeze"], "FREEZE on / off. While on, the water around and ahead of you turns to ice as you move (skate over it, or walk on it). Press it again to turn it off and thaw the ice around you back into water."],
-				[["@ability_e"], "ICE WALL: breaks after one hit. Used on an enemy about 6 ft in front of you it FREEZES them solid for 3 seconds."],
+				[["@ability_e"], "ICE WALL: breaks after one hit. Used on an enemy about 6 ft in front of you it FREEZES them solid for 3 seconds. Then, standing close to your wall, press it again to throw an ICE DISC: one spinning disc flies from the wall where you aim and cuts through enemies. A wall gives four discs and shrinks with each one."],
 			]},
 			{"title": "Ultimate", "entries": [
 				[["@ultimate", "(hold, near water)"], "TIDAL WAVE: pulls the water up into a huge rolling wave. Its size depends on how much water is around you (a puddle is small, a lake or the sea is huge). The water it leaves behind stays where it lands: freeze it with the ice skate and glide over it."],

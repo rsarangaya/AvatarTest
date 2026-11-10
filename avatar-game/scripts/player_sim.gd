@@ -109,6 +109,7 @@ var gathering := false          # drawing water into the pouch
 var gather_acc := 0.0
 var whip_flip := false
 var iwall_cd := 0.0
+var disc_cd := 0.0
 var heal_cd := 0.0
 var heal_left := 0.0            # hit points still to be restored by a heal
 var octo_t := 0.0               # seconds of Octopus Form left
@@ -297,6 +298,9 @@ func take_damage(amount: float) -> void:
 func step(dt: float, inp: InputState) -> void:
 	if debug_nocd:
 		_clear_cooldowns()
+		ult = C.ULT_MAX                             # debug: unlimited ultimates
+	if debug_god:
+		hp = C.PLAYER_HP
 	hp_delay = maxf(0.0, hp_delay - dt)
 	if hp_delay <= 0.0:
 		hp = minf(C.PLAYER_HP, hp + C.HP_REGEN * dt)
@@ -320,6 +324,7 @@ func _clear_cooldowns() -> void:
 	armor_cd = 0.0
 	melee_cd = 0.0
 	iwall_cd = 0.0
+	disc_cd = 0.0
 	heal_cd = 0.0
 	octo_cd = 0.0
 	octo_cd_r = 0.0
@@ -358,6 +363,7 @@ func _step(dt: float, inp: InputState) -> void:
 	pillar_cd = maxf(0.0, pillar_cd - dt)
 	armor_cd = maxf(0.0, armor_cd - dt)
 	iwall_cd = maxf(0.0, iwall_cd - dt)
+	disc_cd = maxf(0.0, disc_cd - dt)
 	heal_cd = maxf(0.0, heal_cd - dt)
 	octo_cd = maxf(0.0, octo_cd - dt)
 	octo_cd_r = maxf(0.0, octo_cd_r - dt)
@@ -1272,11 +1278,14 @@ func _try_pillar(look: Vector3, origin: Vector3) -> void:
 	var at := pos
 	if ray["hit"]:
 		at = ray["point"]
+	var what: String = world.earth_spire(at)
+	if what == "":
+		events.append({"type": "need_earth"})              # open water is not earth: nothing is spent
+		return
 	chi -= C.PILLAR_COST
 	chi_delay = C.CHI_REGEN_DELAY
 	pillar_cd = C.PILLAR_COOLDOWN
-	world.earth_pillar(at)
-	events.append({"type": "pillar", "pos": at})
+	events.append({"type": "pillar", "pos": at, "what": what})
 
 
 # ------------------------------------------------------------------ waterbending
@@ -1524,6 +1533,16 @@ func _try_shards(look: Vector3, origin: Vector3) -> void:
 
 
 func _try_ice_wall(look: Vector3) -> void:
+	var wall: int = world.ice_wall_near(pos, C.DISC_NEAR)
+	if wall >= 0 and not world.freeze_target_near(pos, _flat_fwd(look)):   # close to your own wall: E throws discs of ice from it
+		if disc_cd > 0.0 or chi < _cost(C.DISC_COST):
+			return
+		_spend(C.DISC_COST, pos + _flat_fwd(look) * 6.0)
+		chi_delay = C.WATER_PASSIVE_DELAY
+		disc_cd = C.DISC_COOLDOWN
+		world.ice_discs(wall, pos + Vector3(0.0, eye_height(), 0.0), look, "player", C.DISC_DAMAGE)
+		events.append({"type": "disc_throw", "dir": look})
+		return
 	if iwall_cd > 0.0 or chi < _cost(C.ICE_WALL_COST):
 		return
 	_spend(C.ICE_WALL_COST, pos + _flat_fwd(look) * 1.5)
