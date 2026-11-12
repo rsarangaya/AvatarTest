@@ -58,6 +58,14 @@ class Bot:
 	var path := PackedVector2Array()
 	var path_t := 0.0
 	var path_goal := Vector2.ZERO
+	var heat := 0.0             # firebender bot: Inner Fire (0..100)
+	var heat_idle := 0.0        # seconds since it last attacked
+	var guard_t := 0.0          # fire ring guard: takes little damage, burns up incoming projectiles
+	var flame_t := 0.0          # a flame jet is running
+	var light_t := 0.0          # charging lightning (a pending "lightning" is queued)
+	var burn_t := 0.0           # burning from a fire ring
+	var fx_t := 0.0             # throttle for this bot's flame effect events
+	var ai_t := 0.0             # throttle for the fire duelist's decisions
 
 	func _init(p: Vector3) -> void:
 		pos = p
@@ -100,6 +108,7 @@ var ice_walls: Array = []           # standing ice walls: {a, b, orig, ix0.., t}
 var grabbed: Bot = null             # the enemy held in an octopus arm (Octopus Form, Q)
 var grab_t := 0.0
 var events: Array = []              # drained by the game each frame (visual / audio cues)
+var kills := 0                      # bots the player has killed since the sim last looked (cools a firebender)
 var dealt := 0.0                    # damage dealt by the player since the sim last looked (fills the ult meter)
 var summit := Vector3.ZERO          # top of the Air Temple mountain
 var temple := Vector2.ZERO
@@ -480,15 +489,18 @@ func spawn_proj(kind: String, team: String, at: Vector3, v: Vector3, life: float
 	return p
 
 
-func damage_bot(b: Bot, dmg: float, knock: Vector3, emit := true) -> void:
+func damage_bot(b: Bot, dmg: float, knock: Vector3, emit := true, stun := true, ult := false) -> void:
 	if not b.alive:
 		return
 	if b.armor_t > 0.0:
 		dmg *= 0.3
+	if b.guard_t > 0.0 and not ult:         # the ring guard does not soften ultimates
+		dmg *= C.RING_GUARD_TAKE
 	b.hp -= dmg
 	dealt += dmg
 	b.flash = 0.15
-	b.stun = maxf(b.stun, 0.35)
+	if stun:
+		b.stun = maxf(b.stun, 0.35)
 	b.vel += knock
 	if emit:
 		events.append({"type": "bot_hit", "pos": b.pos + Vector3(0.0, 2.1, 0.0), "damage": dmg})
@@ -496,6 +508,10 @@ func damage_bot(b: Bot, dmg: float, knock: Vector3, emit := true) -> void:
 		b.alive = false
 		b.hp = 0.0
 		b.frozen_t = 0.0
+		b.burn_t = 0.0
+		b.flame_t = 0.0
+		b.light_t = 0.0
+		kills += 1
 		if b == grabbed:
 			grabbed = null
 		b.respawn_t = C.BOT_RESPAWN
@@ -618,7 +634,7 @@ func apply_slam(center: Vector3, radius: float, dmg: float, knock: float) -> int
 		var fall := 1.0 - 0.6 * dist / radius
 		var dir := Vector3(rel.x, 0.0, rel.z)
 		dir = dir.normalized() if dir.length() > 0.01 else Vector3.UP
-		damage_bot(b, dmg * fall, (dir + Vector3.UP * 0.8) * knock * fall)
+		damage_bot(b, dmg * fall, (dir + Vector3.UP * 0.8) * knock * fall, true, true, true)
 		hits += 1
 	var i := projectiles.size() - 1
 	while i >= 0:
@@ -644,7 +660,7 @@ func apply_breath(origin: Vector3, dir: Vector3, dt: float) -> int:
 		if rel.normalized().dot(dir) < C.BREATH_CONE_COS:
 			continue
 		var fall := 1.0 - 0.4 * dist / C.BREATH_RANGE
-		damage_bot(b, C.BREATH_DAMAGE_PER_SEC * dt * fall, Vector3.ZERO, false)
+		damage_bot(b, C.BREATH_DAMAGE_PER_SEC * dt * fall, Vector3.ZERO, false, true, true)
 		b.vel += (dir * C.BREATH_PUSH + Vector3.UP * 14.0) * dt * fall
 		b.stun = maxf(b.stun, 0.25)
 		hits += 1
@@ -922,7 +938,7 @@ func _step_clap(j: Dictionary, dt: float) -> bool:
 			var la := _clap_lat_along(b, j)
 			if absf(la.y) > C.CLAP_HALF_LEN + 1.0 or absf(la.x) > C.CLAP_PAGE:
 				continue
-			damage_bot(b, C.CLAP_RISE_DAMAGE, Vector3.UP * 9.0)         # tossed by a rising page
+			damage_bot(b, C.CLAP_RISE_DAMAGE, Vector3.UP * 9.0, true, true, true)         # tossed by a rising page
 			b.fall_armed = true
 			b.stun = maxf(b.stun, 1.1)
 	# the book slams shut: whatever is between the pages is crushed
@@ -934,7 +950,7 @@ func _step_clap(j: Dictionary, dt: float) -> bool:
 				continue
 			var la2 := _clap_lat_along(b, j)
 			if absf(la2.x) <= C.CLAP_PAGE - 1.0 and absf(la2.y) <= C.CLAP_HALF_LEN + 1.5:
-				damage_bot(b, C.CLAP_DAMAGE, Vector3.UP * C.CLAP_KNOCK_UP)
+				damage_bot(b, C.CLAP_DAMAGE, Vector3.UP * C.CLAP_KNOCK_UP, true, true, true)
 				hits += 1
 		events.append({"type": "clap_slam", "pos": Vector3(c.x, float(j["yref"]), c.y), "dir": Vector3(d.x, 0.0, d.y),
 				"hits": hits, "len": C.CLAP_HALF_LEN})
@@ -1026,6 +1042,26 @@ func _step_job(j: Dictionary, dt: float) -> bool:    # true when finished
 				_register_ice_wall(j)
 				return true
 			return false
+		"combust":
+			j["t"] = float(j["t"]) + dt
+			if float(j["t"]) < C.COMBUST_DELAY:
+				return false
+			var cp: Vector3 = j["at"]
+			var cd: float = j["dmg"]
+			for bt in bots:
+				if not bt.alive:
+					continue
+				var rel := bot_center(bt) - cp
+				var dist := rel.length()
+				if dist > C.COMBUST_RADIUS + C.BOT_RADIUS:
+					continue
+				var dir := Vector3(rel.x, 0.0, rel.z)
+				dir = dir.normalized() if dir.length() > 0.01 else Vector3.UP
+				damage_bot(bt, cd * (1.0 - 0.4 * minf(1.0, dist / C.COMBUST_RADIUS)), (dir + Vector3.UP * 0.8) * C.COMBUST_KNOCK)
+			break_ice_walls_near(cp, C.COMBUST_RADIUS * 0.5)
+			break_ice_walls_near(cp, C.COMBUST_RADIUS * 0.5)      # ice takes double fire damage
+			events.append({"type": "combust", "pos": cp, "radius": C.COMBUST_RADIUS})
+			return true
 		"tide":
 			return _step_tide(j, dt)
 		"clap":
@@ -1041,7 +1077,7 @@ func _step_job(j: Dictionary, dt: float) -> bool:    # true when finished
 				j["phase"] = ph1
 			for bt in bots:
 				if bt.alive and Vector2(bt.pos.x - c.x, bt.pos.z - c.z).length() <= C.QUAKE_RADIUS:
-					damage_bot(bt, C.QUAKE_DPS * dt, Vector3.ZERO, false)
+					damage_bot(bt, C.QUAKE_DPS * dt, Vector3.ZERO, false, true, true)
 					bt.stun = maxf(bt.stun, 0.3)
 					if bt.on_ground and _rng.randf() < dt * 2.5:
 						bt.vel.y = 6.5
@@ -1104,10 +1140,22 @@ func _update_bots(dt: float, player) -> void:
 				b.frozen_t = 0.0
 				b.jet_t = 0.0
 				b.octo_t = 0.0
+				b.heat = 0.0
+				b.guard_t = 0.0
+				b.flame_t = 0.0
+				b.light_t = 0.0
+				b.burn_t = 0.0
 				b.fire_cd = _rng.randf_range(C.BOT_FIRE_MIN, C.BOT_FIRE_MAX)
 				events.append({"type": "bot_respawn", "pos": b.pos + Vector3(0.0, 0.9, 0.0)})
 			continue
 		b.stun = maxf(0.0, b.stun - dt)
+		if b.guard_t > 0.0:
+			b.guard_t -= dt
+		if b.burn_t > 0.0:
+			b.burn_t -= dt
+			damage_bot(b, C.RING_BURN_DPS * dt, Vector3.ZERO, false, false)
+			if not b.alive:
+				continue
 
 		# held in an octopus arm: the arm carries it in front of the player until it is thrown or the time runs out
 		if b == grabbed and player != null:
@@ -1286,6 +1334,8 @@ func _terrain_impact(p: Proj) -> void:
 		"boulder":
 			crater(surf, C.BOULDER_CRATER_RADIUS, C.BOULDER_CRATER_DEPTH)
 			_rock_splash(p, surf)
+		"cbeam":
+			combustion(surf + Vector3(0.0, 0.2, 0.0), p.damage)
 		"slab":
 			crater(surf, C.ROCK_CRATER_RADIUS * 1.6, C.ROCK_CRATER_DEPTH)
 			_rock_splash(p, surf)
@@ -1368,13 +1418,23 @@ func _update_projectiles(dt: float, player) -> void:
 				remove = true
 				events.append({"type": "proj_hit", "pos": p.pos, "kind": p.kind})
 				var iced := break_ice_walls_near(p.pos, 0.4 + p.radius) > 0     # an ice wall takes the hit and shatters
-				if not iced and (p.team == "player" or p.kind == "rock" or p.kind == "boulder" or p.kind == "slab"):
+				if p.kind == "cbeam":
+					combustion(p.pos, p.damage)
+				elif not iced and (p.team == "player" or p.kind == "rock" or p.kind == "boulder" or p.kind == "slab"):
 					_terrain_impact(p)
 			elif p.team == "player":
 				for b in bots:
 					if not b.alive or p.hit.has(b):
 						continue
+					if b.guard_t > 0.0 and C.PROJ_TOUGHNESS.has(p.kind) and p.pos.distance_to(b.pos + Vector3(0.0, 1.0, 0.0)) <= C.RING_GUARD_RADIUS:
+						remove = true                                 # burnt up by a firebender's ring guard
+						events.append({"type": "ring_block", "pos": p.pos})
+						break
 					if _bot_dist(b, p.pos) <= C.BOT_RADIUS + p.radius:
+						if p.kind == "cbeam":
+							combustion(p.pos, p.damage)
+							remove = true
+							break
 						if b.shield_t > 0.0 and player != null:
 							_reflect_at(p, player.pos + Vector3(0.0, 1.0, 0.0))
 							events.append({"type": "deflect", "pos": p.pos})
@@ -1395,6 +1455,9 @@ func _update_projectiles(dt: float, player) -> void:
 				var chest: Vector3 = player.pos + Vector3(0.0, 1.0, 0.0)
 				if _held_blocks(p):
 					remove = true
+				elif player.guard_t > 0.0 and C.PROJ_TOUGHNESS.has(p.kind) and p.pos.distance_squared_to(chest) <= C.RING_GUARD_RADIUS * C.RING_GUARD_RADIUS:
+					remove = true                                 # the fire ring burns up what flies into it
+					events.append({"type": "ring_block", "pos": p.pos})
 				elif player.shield_on and p.pos.distance_to(chest) <= C.SHIELD_RADIUS:
 					_reflect(p)
 				else:
@@ -1437,7 +1500,7 @@ func find_water(feet: Vector3, origin: Vector3, look: Vector3, reach: float, nea
 
 
 # A lash of water along a line: everything within `width` of the segment origin .. origin + dir * reach is struck.
-func apply_whip(origin: Vector3, dir: Vector3, reach: float, width: float, dmg: float, knock: float) -> int:
+func apply_whip(origin: Vector3, dir: Vector3, reach: float, width: float, dmg: float, knock: float, ult := false) -> int:
 	var hits := 0
 	for b in bots:
 		if not b.alive:
@@ -1452,7 +1515,7 @@ func apply_whip(origin: Vector3, dir: Vector3, reach: float, width: float, dmg: 
 		if raycast_solid(origin + dir * 0.5, dir, maxf(along - 0.5, 0.1))["hit"]:
 			continue
 		var kdir := Vector3(dir.x, 0.0, dir.z).normalized()
-		damage_bot(b, dmg, kdir * knock + Vector3.UP * (2.0 + knock * 0.15))
+		damage_bot(b, dmg, kdir * knock + Vector3.UP * (2.0 + knock * 0.15), true, true, ult)
 		hits += 1
 		events.append({"type": "melee_hit", "pos": c})
 	return hits
@@ -1489,6 +1552,8 @@ func apply_jet(origin: Vector3, dir: Vector3, dt: float) -> int:
 func freeze_bot(b: Bot, secs: float) -> void:
 	if not b.alive:
 		return
+	if b.nation == "fire" and b.bender:
+		secs = minf(secs, C.FIRE_THAW_TIME)              # firebenders melt their way out
 	b.frozen_t = maxf(b.frozen_t, secs)
 	b.stun = maxf(b.stun, secs)
 	b.vel.x = 0.0
@@ -1740,10 +1805,145 @@ func _step_tide(j: Dictionary, dt: float) -> bool:
 	for bt in bots:
 		if bt.alive and not (j["hits"] as Array).has(bt) and Vector2(bt.pos.x - q.x, bt.pos.z - q.y).length() < half:
 			(j["hits"] as Array).append(bt)
-			damage_bot(bt, float(j["dmg"]), Vector3(d.x, 0.0, d.y) * C.TIDE_KNOCK + Vector3.UP * 5.0)
+			damage_bot(bt, float(j["dmg"]), Vector3(d.x, 0.0, d.y) * C.TIDE_KNOCK + Vector3.UP * 5.0, true, true, true)
 	break_ice_walls_near(Vector3(q.x, 0.0, q.y), half * 0.5)
 	j["dist"] = nd
 	return nd >= length
+
+
+# ------------------------------------------------------------------ firebending
+
+# Flame jet: called every tick while it runs. A cone that burns without stunning, shoves a little and burns up weak bolts.
+func apply_flame(origin: Vector3, dir: Vector3, dt: float, dps: float) -> int:
+	var hits := 0
+	var reach := C.FLAME_RANGE + C.BOT_RADIUS
+	var push := Vector3(dir.x, 0.0, dir.z).normalized() * (C.FLAME_PUSH * 6.0 * dt)
+	for b in bots:
+		if not b.alive:
+			continue
+		var rel := bot_center(b) - origin
+		var d2 := rel.length_squared()
+		if d2 > reach * reach or d2 < 0.0001:
+			continue
+		var dist := sqrt(d2)
+		if rel.dot(dir) / dist < C.FLAME_CONE_COS and dist > C.BOT_RADIUS + 0.6:
+			continue
+		if raycast_solid(origin + dir * 0.5, rel / dist, maxf(dist - 0.8, 0.1))["hit"]:
+			continue
+		damage_bot(b, dps * dt * (1.0 - 0.3 * dist / reach), Vector3.ZERO, false, false)
+		b.vel += push
+		hits += 1
+	var i := projectiles.size() - 1
+	while i >= 0:
+		var p := projectiles[i]
+		if p.team == "enemy" and C.PROJ_TOUGHNESS.get(p.kind, 99) <= 2:
+			var rel2 := p.pos - origin
+			var d3 := rel2.length_squared()
+			if d3 > 0.0001 and d3 <= C.FLAME_RANGE * C.FLAME_RANGE and rel2.dot(dir) / sqrt(d3) >= C.FLAME_CONE_COS:
+				projectiles.remove_at(i)
+		i -= 1
+	return hits
+
+
+# Flame jet meets an ice wall (rate limited by the caller): ice melts, it counts as two hits.
+func flame_ice(origin: Vector3, dir: Vector3) -> void:
+	if ice_walls.is_empty():
+		return
+	var q := origin + dir * (C.FLAME_RANGE * 0.6)
+	if break_ice_walls_near(q, 1.5) > 0:
+		break_ice_walls_near(q, 1.5)
+
+
+# Dragon Rush: burns everything around the player's flame every tick (a little push away, no stun).
+func apply_rush(center: Vector3, dir: Vector3, dt: float) -> int:
+	var hits := 0
+	var reach := C.RUSH_RADIUS + C.BOT_RADIUS
+	for b in bots:
+		if not b.alive:
+			continue
+		var rel := bot_center(b) - center
+		if rel.length_squared() > reach * reach:
+			continue
+		damage_bot(b, C.RUSH_DPS * dt, Vector3.ZERO, false, false, true)
+		var away := Vector3(rel.x, 0.0, rel.z)
+		away = away.normalized() if away.length() > 0.05 else dir
+		b.vel += (away + Vector3.UP * 0.3) * (C.RUSH_PUSH * 4.0 * dt)
+		hits += 1
+	return hits
+
+
+# Fire ring: a 360 degree burst. Burns and throws back every bot around `center` and burns up every enemy projectile in it.
+func fire_ring(center: Vector3, radius: float, dmg: float, knock: float) -> int:
+	var hits := 0
+	for b in bots:
+		if not b.alive:
+			continue
+		var rel := bot_center(b) - center
+		var flat := Vector2(rel.x, rel.z).length()
+		if flat > radius + C.BOT_RADIUS or absf(rel.y) > 3.5:
+			continue
+		var dir := Vector3(rel.x, 0.0, rel.z)
+		dir = dir.normalized() if dir.length() > 0.01 else Vector3.FORWARD
+		damage_bot(b, dmg * (1.0 - 0.3 * flat / radius), dir * knock + Vector3.UP * 3.0)
+		b.burn_t = C.RING_BURN_TIME
+		hits += 1
+	var i := projectiles.size() - 1
+	while i >= 0:
+		if projectiles[i].team == "enemy" and C.PROJ_TOUGHNESS.has(projectiles[i].kind) \
+				and projectiles[i].pos.distance_to(center + Vector3(0.0, 1.0, 0.0)) <= radius:
+			projectiles.remove_at(i)
+		i -= 1
+	if not ice_walls.is_empty():
+		var n := break_ice_walls_near(center, radius * 0.6)
+		if n > 0:
+			break_ice_walls_near(center, radius * 0.6)
+	# (the player's ring effect comes from the sim's "fring" event; bots emit "fire_ring" themselves)
+	return hits
+
+
+# Combustion: the beam hit here; the blast follows COMBUST_DELAY later (the "combust" job).
+func combustion(at: Vector3, dmg: float) -> void:
+	jobs.append({"kind": "combust", "at": at, "t": 0.0, "dmg": dmg})
+	events.append({"type": "combust_arm", "pos": at, "radius": C.COMBUST_RADIUS, "delay": C.COMBUST_DELAY})
+
+
+# Lightning bolt along a line. Earth walls and the ground stop it, an earth-armored target soaks all of it, a target
+# standing in water conducts (more damage). The first target on the line is struck, with a little splash around it.
+# Returns {end: Vector3, hit: bool, blocked: bool}.
+func lightning(origin: Vector3, dir: Vector3, reach: float, dmg: float) -> Dictionary:
+	var ray := raycast_solid(origin + dir * 0.5, dir, reach)
+	var blocked_at: float = reach
+	if ray["hit"]:
+		blocked_at = origin.distance_to(ray["point"])
+	var best: Bot = null
+	var best_along := blocked_at
+	for b in bots:
+		if not b.alive:
+			continue
+		var rel := bot_center(b) - origin
+		var along := rel.dot(dir)
+		if along < 0.5 or along > best_along:
+			continue
+		if (rel - dir * along).length() <= C.LIGHT_WIDTH + C.BOT_RADIUS:
+			best = b
+			best_along = along
+	var end := origin + dir * best_along
+	var struck := false
+	var soaked := false
+	if best != null:
+		end = bot_center(best)
+		if best.armor_t > 0.0:
+			soaked = true                                  # earth armor takes the whole bolt
+		else:
+			struck = true
+			var wet: float = C.LIGHT_WET_MULT if terrain.water_depth_at(best.pos.x, best.pos.z) > C.SOAK_DEPTH else 1.0
+			damage_bot(best, dmg * wet, dir * 10.0 + Vector3.UP * 5.0, true, true, true)
+			for b2 in bots:
+				if b2 != best and b2.alive and b2.armor_t <= 0.0 and bot_center(b2).distance_to(end) <= C.LIGHT_SPLASH_RADIUS:
+					damage_bot(b2, C.LIGHT_SPLASH, Vector3.UP * 4.0, true, true, true)
+	var blocked := soaked or (best == null and bool(ray["hit"]))
+	events.append({"type": "lightning", "from": origin, "to": end, "hit": struck, "blocked": blocked})
+	return {"end": end, "hit": struck, "blocked": blocked}
 
 
 # ---- Octopus Form
@@ -1787,7 +1987,7 @@ func octo_throw(look: Vector3) -> void:
 	b.on_ground = false
 	b.fall_armed = true
 	b.stun = maxf(b.stun, 0.6)
-	damage_bot(b, C.OCTO_THROW_DAMAGE, Vector3.ZERO)
+	damage_bot(b, C.OCTO_THROW_DAMAGE, Vector3.ZERO, true, true, true)
 	events.append({"type": "octo_throw", "pos": bot_center(b), "dir": look})
 
 
@@ -1807,7 +2007,7 @@ func octo_slam(center: Vector3, radius: float, dmg: float) -> int:
 			continue
 		var dir := Vector3(rel.x, 0.0, rel.z)
 		dir = dir.normalized() if dir.length() > 0.01 else Vector3.UP
-		damage_bot(b, dmg * (1.0 - 0.4 * dist / radius), (dir + Vector3.UP * 0.9) * 11.0)
+		damage_bot(b, dmg * (1.0 - 0.4 * dist / radius), (dir + Vector3.UP * 0.9) * 11.0, true, true, true)
 		hits += 1
 	break_ice_walls_near(center, radius * 0.5)
 	crater(center, 2.6, 0.7)
@@ -1956,6 +2156,12 @@ func reset_bots() -> void:
 		b.frozen_t = 0.0
 		b.jet_t = 0.0
 		b.octo_t = 0.0
+		b.heat = 0.0
+		b.heat_idle = 0.0
+		b.guard_t = 0.0
+		b.flame_t = 0.0
+		b.light_t = 0.0
+		b.burn_t = 0.0
 		b.pending.clear()
 		b.armor_t = 0.0
 		b.shield_t = 0.0

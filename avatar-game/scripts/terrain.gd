@@ -9,6 +9,7 @@ const C = preload("res://scripts/config.gd")
 
 const CELL := 1.0
 const HALF := 200.0
+const FLANK_JITTER := 0.3             # minimum flank roughness (m) on raised earth
 const N := 401                  # samples per side: 400 x 400 cells
 const CHUNK := 20               # cells per render chunk side
 const NCHUNK := 20              # chunks per side
@@ -390,8 +391,8 @@ func raise_mound(cx: float, cz: float, r_top: float, r_flank: float, top_y: floa
 			var p := 1.0 - C.ss(r_top, R, d)
 			var i := iz * N + ix
 			var t := lerpf(h[i] if orig.is_empty() else orig[i], top_y, p)
-			if rough > 0.0 and p < 0.98:
-				t += rough * _rough.get_noise_2d(x, z) * p * (1.0 - p) * 4.0
+			if p < 0.98:                    # flank jitter: zero on the flat top and at the foot
+				t += maxf(rough, FLANK_JITTER) * _rough.get_noise_2d(x, z) * p * (1.0 - p) * 4.0
 			if t > h[i] + 0.001:
 				_store(i, t)
 				n += 1
@@ -422,8 +423,8 @@ func raise_ridge(x0: float, z0: float, x1: float, z1: float, w_top: float, w_fla
 			var p := 1.0 - C.ss(w_top, R, d)
 			var i := iz * N + ix
 			var target := lerpf(h[i] if orig.is_empty() else orig[i], lerpf(y0, y1, t), p)
-			if rough > 0.0 and p < 0.98:
-				target += rough * _rough.get_noise_2d(x, z) * p * (1.0 - p) * 4.0
+			if p < 0.98:
+				target += maxf(rough, FLANK_JITTER) * _rough.get_noise_2d(x, z) * p * (1.0 - p) * 4.0
 			if target > h[i] + 0.001:
 				_store(i, target)
 				n += 1

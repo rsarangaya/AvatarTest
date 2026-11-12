@@ -36,6 +36,10 @@ static func think(w, b, pl, dt: float) -> void:
 	b.gcd = maxf(0.0, b.gcd - dt)
 	for k in b.cds.keys():
 		b.cds[k] = maxf(0.0, float(b.cds[k]) - dt)
+	if b.nation == "fire":                                # Inner Fire: falls when it has not attacked for a moment
+		b.heat_idle += dt
+		if b.heat_idle >= C.HEAT_IDLE and b.heat > 0.0:
+			b.heat = maxf(0.0, b.heat - C.HEAT_DECAY * dt)
 	if pl == null:
 		return
 	if b.frozen_t > 0.0:                                  # frozen solid in ice: no moves, no channels
@@ -43,6 +47,9 @@ static func think(w, b, pl, dt: float) -> void:
 		return
 	_run_channels(w, b, pl, dt)
 	_run_pending(w, b, pl, dt)
+	if b.light_t > 0.0:                                   # standing focused, charging lightning
+		b.ai_move = Vector3.ZERO
+		return
 	if b.stun > 0.0:
 		b.ai_move = Vector3.ZERO
 		return
@@ -60,6 +67,8 @@ static func think(w, b, pl, dt: float) -> void:
 			_air_duelist(w, b, pl, dist)
 		elif b.nation == "water":
 			_water_duelist(w, b, pl, dist)
+		elif b.nation == "fire":
+			_fire_duelist(w, b, pl, dist)
 		else:
 			_earth_duelist(w, b, pl, dist)
 	else:
@@ -76,8 +85,8 @@ static func _steer(w, b, pl, to: Vector3, dist: float, dt: float) -> void:
 		return
 	var fwd := flat.normalized()
 	var side := Vector3(-fwd.z, 0.0, fwd.x)
-	var lo := 7.0 if b.nation == "air" else (8.0 if b.nation == "water" else 12.0)
-	var hi := 14.0 if b.nation == "air" else (16.0 if b.nation == "water" else 19.0)
+	var lo := 7.0 if b.nation == "air" else (8.0 if b.nation == "water" else (3.5 if b.nation == "fire" else 12.0))
+	var hi := 14.0 if b.nation == "air" else (16.0 if b.nation == "water" else (6.5 if b.nation == "fire" else 19.0))
 	var radial := 0.0
 	if dist > hi:
 		radial = 1.0
@@ -92,6 +101,8 @@ static func _steer(w, b, pl, to: Vector3, dist: float, dt: float) -> void:
 		sp = 9.0                                          # crossing the map: run, don't stroll
 	if dist < 2.4:
 		radial = 0.0                                      # close enough to trade blows: stand and fight
+	if b.nation == "fire" and b.heat >= C.BOT_FIRE_BACKOFF_HEAT:
+		radial = -1.0                                     # nearly overheated: back off and cool down
 	var want: Vector3 = fwd * radial + side * b.strafe_dir * 0.8
 	if want.length() < 0.05:
 		b.ai_move = Vector3.ZERO
@@ -243,6 +254,16 @@ static func _fire_pending(w, b, pl, a: Dictionary) -> void:
 				pl.on_ground = false
 			w.events.append({"type": "bot_blast", "pos": b.pos + Vector3(0, 1.4, 0), "dir": d2})
 			_cast(w, b, "thrust")
+		"lightning":
+			_fire_bot_lightning(w, b, pl, a["dir"])
+		"combust":
+			var at: Vector3 = a["at"]
+			var rel2: Vector3 = pl.pos - at
+			if Vector2(rel2.x, rel2.z).length() <= C.COMBUST_RADIUS and absf(rel2.y) < 3.5:
+				pl.take_damage(35.0)
+				pl.vel += Vector3(rel2.x, 0.0, rel2.z).normalized() * 10.0 + Vector3.UP * 4.0
+				pl.on_ground = false
+			w.events.append({"type": "combust", "pos": at, "radius": C.COMBUST_RADIUS})
 		"clap_rise":
 			w.events.append({"type": "clap_rise", "pos": a["pos"], "dir": a["dir"], "gap": C.CLAP_GAP})
 		"clap_slam":
@@ -253,7 +274,7 @@ static func _fire_pending(w, b, pl, a: Dictionary) -> void:
 			var lat := rel.x * (-d3.z) + rel.z * d3.x
 			var hit := absf(lat) <= C.CLAP_PAGE - 1.0 and absf(along) <= C.CLAP_HALF_LEN + 1.5
 			if hit:
-				pl.take_damage(70.0)
+				pl.take_damage(70.0, true)
 				pl.vel.y = 8.0
 				pl.on_ground = false
 			w.events.append({"type": "clap_slam", "pos": c, "dir": d3, "hits": 1 if hit else 0, "len": C.CLAP_HALF_LEN})
@@ -269,6 +290,25 @@ static func _run_channels(w, b, pl, dt: float) -> void:
 			pl.vel += v.normalized() * 30.0 * dt
 		if b.suck_t <= 0.0:
 			b.pending.append({"kind": "blast", "t": 0.1})
+	if b.light_t > 0.0:
+		b.light_t -= dt
+	if b.flame_t > 0.0:                                  # a flame jet: burns the player in front of it
+		b.flame_t -= dt
+		b.heat += C.FLAME_HEAT * dt
+		b.heat_idle = 0.0
+		var fo: Vector3 = b.pos + Vector3(0.0, 1.4, 0.0)
+		var fto: Vector3 = pl.pos + Vector3(0, 1, 0) - fo
+		var fdir := Vector3(-sin(b.yaw), 0.0, -cos(b.yaw))
+		var fl := fto.length()
+		if fl < C.FLAME_RANGE + 0.8 and fdir.dot(Vector3(fto.x, 0.0, fto.z).normalized()) > 0.85 \
+				and not w.raycast_solid(fo + fto / maxf(fl, 0.01) * 0.8, fto / maxf(fl, 0.01), maxf(fl - 1.0, 0.1))["hit"]:
+			pl.take_damage(C.BOT_FLAME_DPS * dt)
+		b.fx_t -= dt
+		if b.fx_t <= 0.0:
+			b.fx_t = C.BOT_BURN_FX_STEP
+			w.events.append({"type": "bot_flame", "pos": fo + fdir * 0.8, "dir": fdir})
+		if b.heat >= C.HEAT_MAX:
+			_bot_overheat(w, b)
 	if b.jet_t > 0.0:                                    # a water jet: shoves the player back and hurts a little
 		b.jet_t -= dt
 		var jo: Vector3 = b.pos + Vector3(0.0, 1.4, 0.0)
@@ -285,7 +325,7 @@ static func _run_channels(w, b, pl, dt: float) -> void:
 		var oto: Vector3 = pl.pos + Vector3(0, 1, 0) - oo
 		if b.octo_hit_t <= 0.0 and oto.length() < 16.0 and not w.raycast_solid(oo + oto.normalized() * 0.8, oto.normalized(), maxf(oto.length() - 1.0, 0.1))["hit"]:
 			b.octo_hit_t = 0.9
-			pl.take_damage(20.0)
+			pl.take_damage(20.0, true)
 			var away := Vector3(oto.x, 0.0, oto.z).normalized()
 			pl.vel += away * 10.0 + Vector3.UP * 3.0
 			pl.on_ground = false
@@ -296,7 +336,7 @@ static func _run_channels(w, b, pl, dt: float) -> void:
 		var to: Vector3 = pl.pos + Vector3(0, 1, 0) - origin
 		var dir := Vector3(-sin(b.yaw), 0.0, -cos(b.yaw))
 		if to.length() < 22.0 and dir.dot(Vector3(to.x, 0.0, to.z).normalized()) > 0.8:
-			pl.take_damage(38.0 * dt)
+			pl.take_damage(38.0 * dt, true)
 			pl.vel += dir * 26.0 * dt
 		w.events.append({"type": "bot_breath", "pos": origin + dir * 0.8, "dir": dir})
 
@@ -307,6 +347,13 @@ static func _grunt(w, b, pl, dist: float) -> void:
 		return
 	b.gcd = randf_range(1.4, 2.8)
 	var origin: Vector3 = b.pos + Vector3(0.0, 1.4, 0.0)
+	if b.nation == "fire":
+		if dist < 6.0 and _cd(b, "whip") <= 0.0:
+			_whip_player(w, b, pl, 6.0, 12.0, true)
+			_set_cd(b, "whip", 2.2)
+		else:
+			_fpunch(w, b, pl, 6.0)
+		return
 	if b.nation == "water":
 		if dist < 8.0 and _cd(b, "whip") <= 0.0:
 			_whip_player(w, b, pl, 8.0)
@@ -346,16 +393,16 @@ static func _grunt(w, b, pl, dist: float) -> void:
 
 # ---- water helpers
 # A quick solid lash that hurts the player if it can reach them.
-static func _whip_player(w, b, pl, reach: float) -> void:
+static func _whip_player(w, b, pl, reach: float, dmg := 11.0, fire := false) -> void:
 	var origin: Vector3 = b.pos + Vector3(0.0, 1.4, 0.0)
 	var target: Vector3 = pl.pos + Vector3(0.0, 1.0, 0.0)
 	var d := target - origin
 	if d.length() <= reach and not w.raycast_solid(origin + d.normalized() * 0.6, d.normalized(), maxf(d.length() - 0.8, 0.1))["hit"]:
 		var away := Vector3(d.x, 0.0, d.z).normalized()
-		pl.take_damage(11.0)
+		pl.take_damage(dmg)
 		pl.vel += away * 6.0 + Vector3.UP * 2.0
 		pl.on_ground = false
-		w.events.append({"type": "bot_whip", "from": origin, "to": target, "big": false})
+		w.events.append({"type": "bot_whip", "from": origin, "to": target, "big": false, "fire": fire})
 	_cast(w, b, "slash")
 
 
@@ -369,6 +416,126 @@ static func _shard(w, b, pl, count: int) -> void:
 		var dd := (base + right * (float(k) - float(count - 1) * 0.5) * 0.08).normalized()
 		w.spawn_proj("shard", "enemy", origin + dd * 1.0, dd * C.SHARD_SPEED * 0.8, C.SHARD_LIFE * 1.6, C.SHARD_RADIUS, 7.0, 3.0, false, 0.0, b)
 	_cast(w, b, "thrust")
+
+
+# ---- fire helpers and the fire duelist
+static func _fpunch(w, b, pl, dmg: float) -> void:
+	var o: Vector3 = b.pos + Vector3(0.0, 1.4, 0.0)
+	var d := _aim(b, pl, C.FPUNCH_SPEED)
+	w.spawn_proj("fpunch", "enemy", o + d * 0.8, d * C.FPUNCH_SPEED * 0.6, C.FPUNCH_LIFE * 2.4, C.FPUNCH_RADIUS, dmg, 4.0, false, 0.0, b)
+	_cast(w, b, "punch")
+
+
+static func _bot_heat(w, b, h: float) -> void:
+	b.heat += h
+	b.heat_idle = 0.0
+	if b.heat >= C.HEAT_MAX:
+		_bot_overheat(w, b)
+
+
+static func _bot_overheat(w, b) -> void:
+	b.heat = C.OVERHEAT_RESET
+	b.flame_t = 0.0
+	b.stun = maxf(b.stun, C.OVERHEAT_TIME)               # overheated: it cannot act for a moment
+	b.gcd = C.OVERHEAT_TIME
+	w.events.append({"type": "bot_overheat", "pos": b.pos + Vector3(0.0, 1.0, 0.0)})
+
+
+static func _fire_bot_lightning(w, b, pl, dir: Vector3) -> void:
+	var o: Vector3 = b.pos + Vector3(0.0, 1.4, 0.0)
+	var ray: Dictionary = w.raycast_solid(o + dir * 0.5, dir, C.LIGHT_RANGE)
+	var reach: float = C.LIGHT_RANGE
+	if ray["hit"]:
+		reach = o.distance_to(ray["point"])
+	var rel: Vector3 = pl.pos + Vector3(0, 1, 0) - o
+	var along := rel.dot(dir)
+	var hit := false
+	var blocked: bool = bool(ray["hit"])
+	var end: Vector3 = o + dir * reach
+	if along > 0.5 and along <= reach and (rel - dir * along).length() <= 2.2:
+		end = pl.pos + Vector3(0, 1, 0)
+		blocked = false
+		if pl.armor_on:
+			pl.armor_hp = maxf(0.0, pl.armor_hp - C.LIGHT_ARMOR_COST)       # earth armor soaks it
+			blocked = true
+		else:
+			hit = true
+			pl.take_damage(C.BOT_LIGHT_DAMAGE * (C.LIGHT_WET_MULT if pl.water_depth >= C.SOAK_DEPTH else 1.0), true)
+			pl.vel += dir * 8.0 + Vector3.UP * 4.0
+			pl.on_ground = false
+	w.events.append({"type": "lightning", "from": o, "to": end, "hit": hit, "blocked": blocked})
+
+
+static func _fire_duelist(w, b, pl, dist: float) -> void:
+	var origin: Vector3 = b.pos + Vector3(0.0, 1.4, 0.0)
+	b.gcd = randf_range(C.BOT_AI_FIRE_STEP, C.BOT_AI_FIRE_STEP * 2.0)
+	if b.ult_charge >= 1.0 and dist < 40.0 and b.light_t <= 0.0:       # lightning: a long, obvious wind-up
+		b.ult_charge = 0.0
+		b.light_t = C.LIGHT_CHARGE
+		var ld: Vector3 = (pl.pos + Vector3(0, 1, 0) - origin).normalized()
+		b.pending.append({"kind": "lightning", "t": C.LIGHT_CHARGE, "dir": ld})
+		w.events.append({"type": "bot_charge", "pos": b.pos + Vector3(0.0, 1.0, 0.0), "bot": b, "dur": C.LIGHT_CHARGE})
+		b.gcd = C.LIGHT_CHARGE + 0.3
+		_cast(w, b, "slam")
+		return
+	if dist < C.RING_RADIUS - 0.5 and _cd(b, "ring") <= 0.0 and b.hp < b.max_hp * 0.75:     # the ring when hurt and you are close
+		_set_cd(b, "ring", 9.0)
+		b.guard_t = C.RING_GUARD_TIME
+		_bot_heat(w, b, C.RING_HEAT)
+		if pl.pos.distance_to(b.pos) <= C.RING_RADIUS:
+			var away := Vector3(pl.pos.x - b.pos.x, 0.0, pl.pos.z - b.pos.z).normalized()
+			pl.take_damage(C.BOT_RING_DAMAGE)
+			pl.vel += away * C.RING_KNOCK + Vector3.UP * 3.0
+			pl.on_ground = false
+		var i: int = w.projectiles.size() - 1
+		while i >= 0:
+			var p = w.projectiles[i]
+			if p.team == "player" and C.PROJ_TOUGHNESS.has(p.kind) and p.pos.distance_to(b.pos + Vector3(0, 1, 0)) <= C.RING_RADIUS:
+				w.projectiles.remove_at(i)
+			i -= 1
+		w.events.append({"type": "fire_ring", "pos": b.pos, "radius": C.RING_RADIUS, "hits": 0})
+		_cast(w, b, "slam")
+		return
+	if dist > 10.0 and _cd(b, "dash") <= 0.0:             # dash in
+		b.scoot_t = 0.9
+		_set_cd(b, "dash", 4.0)
+		_bot_heat(w, b, C.FDASH_HEAT)
+		_cast(w, b, "thrust")
+		return
+	if dist > 9.0 and dist < 32.0 and _cd(b, "combust") <= 0.0 and randf() < 0.5:
+		var at: Vector3 = pl.pos
+		b.pending.append({"kind": "combust", "t": 0.9, "at": at})
+		w.events.append({"type": "bot_telegraph", "pos": at, "radius": C.COMBUST_RADIUS, "dur": 0.9})
+		_set_cd(b, "combust", 14.0)
+		_bot_heat(w, b, C.COMBUST_HEAT)
+		_cast(w, b, "thrust")
+		return
+	if dist < C.FLAME_RANGE and b.heat < 80.0 and _cd(b, "flame") <= 0.0:
+		b.flame_t = 1.0
+		_set_cd(b, "flame", 2.6)
+		b.gcd = 1.0
+		_cast(w, b, "thrust")
+		return
+	if dist < 6.0 and _cd(b, "whip") <= 0.0:
+		_whip_player(w, b, pl, 6.0, 20.0, true)
+		_set_cd(b, "whip", 1.6)
+		_bot_heat(w, b, C.FWHIP_HEAT)
+		return
+	if dist < 26.0 and _cd(b, "arcs") <= 0.0:
+		var base := _aim(b, pl, C.FARC_SPEED)
+		var right := base.cross(Vector3.UP)
+		right = right.normalized() if right.length() > 0.01 else Vector3.RIGHT
+		for k in range(C.FARC_COUNT):
+			var dd := (base + right * (float(k) - float(C.FARC_COUNT - 1) * 0.5) * C.FARC_SPREAD).normalized()
+			w.spawn_proj("farc", "enemy", origin + dd * 1.0, dd * C.FARC_SPEED * 0.7, C.FARC_LIFE * 1.6, C.FARC_RADIUS, 11.0, 4.0, false, 0.0, b)
+		_set_cd(b, "arcs", 5.0)
+		_bot_heat(w, b, C.FARC_HEAT)
+		_cast(w, b, "thrust")
+		return
+	if dist < 18.0 and _cd(b, "punch") <= 0.0:
+		_fpunch(w, b, pl, 8.0)
+		_set_cd(b, "punch", 0.7)
+		_bot_heat(w, b, C.FPUNCH_HEAT)
 
 
 # ---- the water duelist: the full kit

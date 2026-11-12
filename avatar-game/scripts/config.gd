@@ -626,5 +626,114 @@ const PROJ_TOUGHNESS := {
 	"boulder": 3,
 	"slab": 3,       # thrown earth wall
 	"disc": 3,       # ice disc (still passes through enemies)
+	"fpunch": 1,     # fire punch
+	"farc": 2,       # flame arc
+	"cbeam": 3,      # combustion beam (its blast comes later)
 }
 const CLASH_PAD := 0.1                    # m added to the two radii when testing a touch
+
+
+# ---- Fire nation (firebender). Resource: the INNER FIRE heat meter (0..100), shown in the chi bar. No chi, no melee fallback.
+# Spam DPS target 40-55 (see tests/damage_table.gd). Heat rises with every attack and a little with damage dealt; it only
+# falls when you have not attacked for HEAT_IDLE seconds. Above HEAT_HOT you are HOT (+20% damage and dash distance).
+const HEAT_MAX := 100.0
+const HEAT_HOT := 70.0
+const HOT_MULT := 1.2
+const HEAT_IDLE := 0.8                   # seconds without attacking before the heat starts to fall
+const HEAT_DECAY := 12.0                 # per second
+const HEAT_PER_DAMAGE := 0.04            # heat per point of damage dealt (ultimate hits excluded)
+const HEAT_KILL_DROP := 25.0             # a kill cools you down
+const HEAT_SOAK_DROP := 45.0             # per second while standing in water
+const SOAK_TIME := 3.0                   # seconds you stay "soaked" after leaving water: no ring, no lightning
+const SOAK_DEPTH := 0.25                 # water this deep soaks you
+const OVERHEAT_TIME := 2.0               # at 100% heat: no moves for this long, and slow
+const OVERHEAT_MOVE_MULT := 0.5
+const OVERHEAT_RESET := 50.0             # heat after an overheat ends
+const FIRE_THAW_TIME := 0.5              # a firebender frozen solid thaws in this long
+# LMB tap: fire punch (a short, quick fireball)
+const FPUNCH_DAMAGE := 12.0
+const FPUNCH_COOLDOWN := 0.28
+const FPUNCH_SPEED := 38.0
+const FPUNCH_LIFE := 0.32                # about 12 m
+const FPUNCH_RADIUS := 0.5
+const FPUNCH_KNOCK := 4.0
+const FPUNCH_HEAT := 4.0
+# LMB hold: flame jet (about 45 DPS, 7 m cone)
+const FLAME_DPS := 45.0
+const FLAME_RANGE := 7.0
+const FLAME_CONE_COS := 0.88
+const FLAME_PUSH := 3.0                  # gentle shove (m/s) so it does not pin anyone
+const FLAME_HEAT := 14.0                 # per second
+const FLAME_MOVE_MULT := 0.7
+const FLAME_ICE_STEP := 0.4              # seconds between hits on an ice wall (ice melts: it breaks fast)
+# RMB: fire whip
+const FWHIP_DAMAGE := 22.0
+const FWHIP_REACH := 6.0
+const FWHIP_WIDTH := 0.9
+const FWHIP_COOLDOWN := 0.9
+const FWHIP_KNOCK := 7.0
+const FWHIP_HEAT := 10.0
+# Q: fire dash (burst of 12 m; one in the air per landing; ground cooldown)
+const FDASH_DIST := 12.0
+const FDASH_TIME := 0.16
+const FDASH_COOLDOWN := 2.5
+const FDASH_EXIT_SPEED := 11.0
+const FDASH_HEAT := 8.0
+# F: fire ring (the main defense): 360 degree burn + knockback, then a guard that destroys incoming projectiles
+const RING_RADIUS := 6.0
+const RING_DAMAGE := 30.0
+const RING_KNOCK := 16.0
+const RING_BURN_DPS := 5.0
+const RING_BURN_TIME := 3.0
+const RING_COOLDOWN := 6.0
+const RING_HEAT := 18.0
+const RING_GUARD_TIME := 2.2             # seconds of guard after the burst
+const RING_GUARD_RADIUS := 3.6           # incoming (non-ultimate) projectiles inside this are burnt up
+const RING_GUARD_TAKE := 0.3             # direct damage taken while the guard is up
+# Z: flame arcs (3 crescents, toughness 2)
+const FARC_DAMAGE := 16.0
+const FARC_COUNT := 3
+const FARC_SPREAD := 0.16
+const FARC_SPEED := 30.0
+const FARC_LIFE := 0.8
+const FARC_RADIUS := 0.7
+const FARC_KNOCK := 5.0
+const FARC_COOLDOWN := 4.0
+const FARC_HEAT := 14.0
+# T: combustion beam: a fast beam, the blast comes COMBUST_DELAY later where it hit
+const CBEAM_SPEED := 80.0
+const CBEAM_LIFE := 0.55
+const CBEAM_RADIUS := 0.35
+const COMBUST_DELAY := 0.55
+const COMBUST_RADIUS := 4.5
+const COMBUST_DAMAGE := 45.0
+const COMBUST_KNOCK := 12.0
+const COMBUST_COOLDOWN := 14.0
+const COMBUST_HEAT := 18.0
+# X tap: Dragon Rush (steerable fire-jet flight, about 55 DPS to everything near the flame, 9 s)
+const RUSH_TIME := 9.0
+const RUSH_SPEED := 26.0
+const RUSH_TURN := 2.6                   # rad/s the flight direction swings towards where you look
+const RUSH_RADIUS := 3.2
+const RUSH_DPS := 55.0
+const RUSH_PUSH := 6.0
+const RUSH_MIN_CLEARANCE := 1.2          # stays this far above the ground
+# X hold: Lightning (about 2 s standing still and focused, then a bolt). Blocked by earth walls and earth armor.
+const LIGHT_CHARGE := 2.0
+const LIGHT_MIN_CHARGE := 0.8           # release after this and the bolt fires, scaled by the charge; earlier and it fizzles (meter kept)
+const LIGHT_MIN_FRAC := 0.5              # damage at the minimum charge (100% at the full LIGHT_CHARGE)
+const LIGHT_MOVE_MULT := 0.15
+const LIGHT_RANGE := 90.0
+const LIGHT_DAMAGE := 150.0
+const LIGHT_SPLASH := 40.0
+const LIGHT_SPLASH_RADIUS := 4.0
+const LIGHT_WIDTH := 1.8                 # how close to the line a target must be
+const LIGHT_WET_MULT := 1.3              # a target standing in water conducts: more damage
+const LIGHT_ARMOR_COST := 40.0           # earth armor soaks the whole bolt and loses this much
+# bots
+const BOT_FIRE_BACKOFF_HEAT := 90.0
+const BOT_FLAME_DPS := 30.0
+const BOT_RING_DAMAGE := 20.0
+const BOT_LIGHT_DAMAGE := 55.0
+const BOT_BURN_FX_STEP := 0.1            # seconds between flame effect events from a bot's jet
+const BOT_AI_FIRE_STEP := 0.2            # a fire duelist decides at most this often

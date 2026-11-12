@@ -138,6 +138,28 @@ var _prev_e := false
 var _prev_f := false
 var _e_edge := false
 var _f_edge := false
+# firebending (see config.gd "Fire nation")
+var heat := 0.0                  # Inner Fire 0..HEAT_MAX (shown in the chi bar)
+var heat_idle := 0.0             # seconds since the last attack (heat only falls after HEAT_IDLE)
+var overheat_t := 0.0            # > 0: overheated, no moves
+var soak_t := 0.0                # > 0: soaked by water: no ring, no lightning
+var flaming := false             # flame jet running
+var flame_ice_t := 0.0
+var fpunch_cd := 0.0
+var fwhip_cd := 0.0
+var dash_cd := 0.0
+var dash_t := 0.0                # > 0 while the fire dash burst runs
+var dash_dir := Vector3.ZERO
+var dash_speed := 0.0
+var dash_air_used := false       # one dash in the air per landing
+var ring_cd := 0.0
+var guard_t := 0.0               # fire ring guard: little damage taken, projectiles burn up inside it
+var farc_cd := 0.0
+var combust_cd := 0.0
+var rush_t := 0.0                # seconds of Dragon Rush left
+var rush_dir := Vector3.ZERO
+var light_t := -1.0              # >= 0 while charging lightning (seconds so far)
+var _rush_fx_acc := 0.0
 
 var mantle := {}
 var events: Array = []
@@ -188,6 +210,16 @@ func respawn() -> void:
 	heal_left = 0.0
 	ult_hold = -1.0
 	ult_lock = 0.0
+	heat = 0.0
+	heat_idle = 0.0
+	overheat_t = 0.0
+	soak_t = 0.0
+	flaming = false
+	dash_t = 0.0
+	dash_air_used = false
+	guard_t = 0.0
+	rush_t = 0.0
+	light_t = -1.0
 	gliding = false
 	shield_on = false
 	suction_on = false
@@ -207,6 +239,8 @@ func respawn() -> void:
 
 
 func chi_cap() -> float:
+	if element == "fire":
+		return C.HEAT_MAX
 	if element == "water":
 		return C.WATER_MAX
 	return C.AIR_CHI_MAX if element == "air" else C.CHI_MAX
@@ -234,8 +268,19 @@ func ult_ready() -> bool:
 	return ult >= C.ULT_MAX - 0.001
 
 
+func is_hot() -> bool:
+	return element == "fire" and heat >= C.HEAT_HOT
+
+
+func _hot_mult() -> float:
+	return C.HOT_MULT if heat >= C.HEAT_HOT else 1.0
+
+
+
 # Which ultimate pressing X would trigger right now.
 func ult_kind() -> String:
+	if element == "fire":
+		return "rush"                               # tap = Dragon Rush, hold = Lightning
 	if element == "water":
 		return "tide"                               # tap = Octopus Form, hold near water = Tidal Wave
 	if not on_ground and slam.is_empty() and height_above_ground() >= C.BOMB_MIN_HEIGHT:
@@ -244,6 +289,17 @@ func ult_kind() -> String:
 
 
 func state_name() -> String:
+	if element == "fire":
+		if rush_t > 0.0:
+			return "DRAGON RUSH"
+		if light_t >= 0.0:
+			return "LIGHTNING"
+		if overheat_t > 0.0:
+			return "OVERHEATED"
+		if dash_t > 0.0:
+			return "FIRE DASH"
+		if flaming:
+			return "FLAME JET"
 	if octo_t > 0.0:
 		return "OCTOPUS FORM"
 	if jet_on:
@@ -280,9 +336,11 @@ func state_name() -> String:
 	return "IDLE"
 
 
-func take_damage(amount: float) -> void:
+func take_damage(amount: float, ult := false) -> void:
 	if debug_god:
 		return
+	if guard_t > 0.0 and not ult:
+		amount *= C.RING_GUARD_TAKE                 # the fire ring's guard
 	if not slam.is_empty():
 		return                                  # the air bomb makes you untouchable
 	if armor_on:
@@ -318,9 +376,15 @@ func step(dt: float, inp: InputState) -> void:
 		hp = minf(C.PLAYER_HP, hp + C.HP_REGEN * dt)
 	_step(dt, inp)
 	world.update_combat(dt, self)
+	if element == "fire" and ult_lock <= 0.0 and rush_t <= 0.0 and light_t < 0.0:
+		heat += world.dealt * C.HEAT_PER_DAMAGE         # damage dealt feeds the fire
+		heat -= float(world.kills) * C.HEAT_KILL_DROP    # a kill cools you down
 	if octo_t <= 0.0 and ult_lock <= 0.0:       # the meter only fills from damage you deal (an ultimate's own hits do not refill it)
 		ult = minf(C.ULT_MAX, ult + world.dealt * C.ULT_PER_DAMAGE)
 	world.dealt = 0.0
+	if element == "fire":
+		_update_heat(dt)
+	world.kills = 0
 
 
 func _clear_cooldowns() -> void:
@@ -347,6 +411,15 @@ func _clear_cooldowns() -> void:
 	octo_cd_r = 0.0
 	octo_slam_cd = 0.0
 	octo_q_cd = 0.0
+	fpunch_cd = 0.0
+	fwhip_cd = 0.0
+	dash_cd = 0.0
+	dash_air_used = false
+	ring_cd = 0.0
+	farc_cd = 0.0
+	combust_cd = 0.0
+	heat = 0.0                                     # debug: no overheat
+	overheat_t = 0.0
 
 
 # Pick the nation (the menus do this once, at the start of a game).
@@ -394,6 +467,14 @@ func _step(dt: float, inp: InputState) -> void:
 	octo_slam_cd = maxf(0.0, octo_slam_cd - dt)
 	octo_q_cd = maxf(0.0, octo_q_cd - dt)
 	ult_lock = maxf(0.0, ult_lock - dt)
+	if element == "fire":
+		fpunch_cd = maxf(0.0, fpunch_cd - dt)
+		fwhip_cd = maxf(0.0, fwhip_cd - dt)
+		dash_cd = maxf(0.0, dash_cd - dt)
+		ring_cd = maxf(0.0, ring_cd - dt)
+		farc_cd = maxf(0.0, farc_cd - dt)
+		combust_cd = maxf(0.0, combust_cd - dt)
+		guard_t = maxf(0.0, guard_t - dt)
 	near_water = element == "water" and _wet_within(C.WATER_FREE_RADIUS)
 	if element == "water":
 		_tide_power_t -= dt
@@ -447,6 +528,13 @@ func _step(dt: float, inp: InputState) -> void:
 	if not slam.is_empty():            # the ultimate just started an air bomb: skip this tick's movement
 		return
 
+	if rush_t > 0.0:
+		_update_rush(dt, wish)
+		return
+	if dash_t > 0.0:
+		_step_dash(dt)
+		return
+
 	# Crouch / slide state (the scooter replaces crouching)
 	var want_crouch := inp.crouch and not scooter and not skating
 	if on_ground and not sliding and want_crouch and not crouch_latch \
@@ -488,6 +576,12 @@ func _step(dt: float, inp: InputState) -> void:
 		move_mult = minf(move_mult, C.JET_MOVE_MULT)
 	if armor_on:
 		move_mult = minf(move_mult, C.ARMOR_MOVE_MULT)
+	if overheat_t > 0.0:
+		move_mult = minf(move_mult, C.OVERHEAT_MOVE_MULT)
+	if flaming:
+		move_mult = minf(move_mult, C.FLAME_MOVE_MULT)
+	if light_t >= 0.0:
+		move_mult = minf(move_mult, C.LIGHT_MOVE_MULT)
 	if not world.held.is_empty():
 		move_mult = minf(move_mult, C.HELD_MOVE_MULT)
 
@@ -903,7 +997,9 @@ func _update_abilities(dt: float, inp: InputState) -> void:
 	# Air Scooter toggle (airbending only)
 	if inp.scooter_pressed:
 		inp.scooter_pressed = false
-		if element == "water":
+		if element == "fire":
+			_fire_dash()
+		elif element == "water":
 			_water_q()
 		elif element == "earth":
 			if skating:
@@ -936,6 +1032,9 @@ func _update_abilities(dt: float, inp: InputState) -> void:
 		if element == "water":
 			if ult_ready() and octo_t <= 0.0:
 				ult_hold = 0.0                 # tap or hold? decided in _update_water
+		elif element == "fire":
+			if ult_ready() and rush_t <= 0.0 and light_t < 0.0 and overheat_t <= 0.0:
+				ult_hold = 0.0                 # tap or hold? decided in _update_fire
 		else:
 			_try_ult()
 			if not slam.is_empty():
@@ -974,6 +1073,10 @@ func _update_abilities(dt: float, inp: InputState) -> void:
 					C.BOULDER_LIFE, C.BOULDER_RADIUS, C.BOULDER_DAMAGE, C.BOULDER_KNOCKBACK, false)
 			bp.grav = C.BOULDER_GRAVITY
 			events.append({"type": "boulder", "origin": origin, "dir": look})
+
+	if element == "fire":
+		_update_fire(dt, inp, look, origin)
+		return
 
 	if element == "water":
 		_update_water(dt, inp, look, origin)
@@ -1091,7 +1194,7 @@ func _update_abilities(dt: float, inp: InputState) -> void:
 
 
 func can_switch_element() -> bool:
-	return breath_t <= 0.0 and quake_t <= 0.0 and slam.is_empty() and mantle.is_empty() and octo_t <= 0.0
+	return breath_t <= 0.0 and quake_t <= 0.0 and slam.is_empty() and mantle.is_empty() and octo_t <= 0.0 and rush_t <= 0.0
 
 
 func _set_element(e: String) -> void:
@@ -1675,7 +1778,7 @@ func _update_octopus(inp: InputState, look: Vector3, origin: Vector3) -> void:
 
 
 func _octo_swipe(side: int, look: Vector3, origin: Vector3) -> void:
-	var hits: int = world.apply_whip(origin, look, C.OCTO_REACH, C.OCTO_WIDTH, C.OCTO_SWIPE_DAMAGE, C.OCTO_SWIPE_KNOCK)
+	var hits: int = world.apply_whip(origin, look, C.OCTO_REACH, C.OCTO_WIDTH, C.OCTO_SWIPE_DAMAGE, C.OCTO_SWIPE_KNOCK, true)
 	events.append({"type": "octo_swipe", "side": side, "origin": origin, "dir": look, "hits": hits})
 
 
@@ -1704,6 +1807,8 @@ func _release_channels() -> void:
 	elevating = false
 	sliding = false
 	jet_on = false
+	flaming = false
+	light_t = -1.0
 	gathering = false
 	freezing = false
 	ult_hold = -1.0
@@ -1781,6 +1886,306 @@ func _slam_impact() -> void:
 	slam = {}
 	vel = Vector3.ZERO
 	jump_buf = 0.0
+
+
+# ------------------------------------------------------------------ firebending
+# Resource: the heat meter (no chi). Every attack adds heat; above HEAT_HOT you hit 20% harder and dash further; at 100%
+# you overheat (no moves, slow). Heat only falls when you have not attacked for a moment. Standing in water cools it fast.
+
+func _add_heat(h: float) -> void:
+	heat += h
+	heat_idle = 0.0
+
+
+func _update_heat(dt: float) -> void:
+	heat_idle += dt
+	var wet: bool = water_depth >= C.SOAK_DEPTH
+	if wet:
+		soak_t = C.SOAK_TIME
+		heat -= C.HEAT_SOAK_DROP * dt
+		if flaming:
+			flaming = false
+		if guard_t > 0.0:
+			guard_t = 0.0                                 # water puts the ring out
+			events.append({"type": "too_wet"})
+		if light_t >= 0.0:
+			light_t = -1.0
+			events.append({"type": "lightning_cancel"})
+	elif soak_t > 0.0:
+		soak_t = maxf(0.0, soak_t - dt)
+	elif heat_idle >= C.HEAT_IDLE and overheat_t <= 0.0:
+		heat -= C.HEAT_DECAY * dt
+	heat = clampf(heat, 0.0, C.HEAT_MAX)
+	if overheat_t > 0.0:
+		overheat_t -= dt
+		if overheat_t <= 0.0:
+			overheat_t = 0.0
+			heat = C.OVERHEAT_RESET
+			events.append({"type": "overheat_end"})
+	elif heat >= C.HEAT_MAX - 0.001 and not debug_nocd:
+		overheat_t = C.OVERHEAT_TIME
+		flaming = false
+		fire_down = false
+		dash_t = 0.0
+		if light_t >= 0.0:
+			light_t = -1.0
+		events.append({"type": "overheat", "pos": pos})
+
+
+func _update_fire(dt: float, inp: InputState, look: Vector3, origin: Vector3) -> void:
+	shield_on = false
+	suction_on = false
+	charging = false
+	charge = 0.0
+	if overheat_t > 0.0:                                 # overheated: nothing works until it passes
+		_clear_edges(inp)
+		inp.fire_held = false
+		flaming = false
+		fire_down = false
+		ult_hold = -1.0
+		_e_edge = false
+		_f_edge = false
+		return
+
+	if rush_t > 0.0:                                     # the rush has its own controls (steer with the mouse)
+		_clear_edges(inp)
+		flaming = false
+		fire_down = false
+		return
+
+	# X: tap = Dragon Rush, hold = Lightning (about 2 s standing focused, then the bolt)
+	if ult_hold >= 0.0:
+		if inp.ult_held:
+			ult_hold += dt
+			if ult_hold >= C.ULT_HOLD_TIME:
+				ult_hold = -1.0
+				_start_lightning()
+		else:
+			ult_hold = -1.0
+			_start_rush(look)
+			return
+	if light_t >= 0.0:
+		_clear_edges(inp)
+		flaming = false
+		fire_down = false
+		if water_depth >= C.SOAK_DEPTH:
+			light_t = -1.0                                # stepped into water: the charge is lost, the meter is kept
+			events.append({"type": "lightning_cancel"})
+			events.append({"type": "too_wet"})
+		elif not inp.ult_held:
+			if light_t >= C.LIGHT_MIN_CHARGE:
+				_fire_lightning(look, origin)             # let go after the minimum: the bolt goes, scaled by the charge
+			else:
+				light_t = -1.0                            # let go early: the charge fizzles, the meter is kept
+				events.append({"type": "lightning_cancel"})
+		else:
+			light_t += dt
+			if light_t >= C.LIGHT_CHARGE:
+				_fire_lightning(look, origin)
+		return
+
+	# Left button: tap = fire punch, hold = flame jet
+	if inp.fire_pressed:
+		inp.fire_pressed = false
+		fire_down = true
+		fire_time = 0.0
+		flaming = false
+	if fire_down:
+		if inp.fire_held:
+			fire_time += dt
+			if fire_time >= C.TAP_TIME and soak_t <= 0.0:
+				if not flaming:
+					flaming = true
+					events.append({"type": "flame_start"})
+				_add_heat(C.FLAME_HEAT * dt)
+				world.apply_flame(origin, look, dt, C.FLAME_DPS * _hot_mult())
+				flame_ice_t -= dt
+				if flame_ice_t <= 0.0:
+					flame_ice_t = C.FLAME_ICE_STEP
+					world.flame_ice(origin, look)
+		else:
+			if flaming:
+				events.append({"type": "flame_end"})
+			elif fire_time < C.TAP_TIME:
+				_try_fpunch(look, origin)
+			flaming = false
+			fire_down = false
+
+	# Right click: fire whip
+	if inp.slice_pressed:
+		inp.slice_pressed = false
+		_try_fwhip(look, origin)
+
+	# Z: flame arcs, T: combustion beam, F: fire ring
+	if inp.barrage_pressed:
+		inp.barrage_pressed = false
+		_try_farcs(look, origin)
+	if inp.freeze_pressed:
+		inp.freeze_pressed = false
+		_try_combustion(look, origin)
+	if _f_edge:
+		_try_ring(origin)
+
+
+func _try_fpunch(look: Vector3, origin: Vector3) -> void:
+	if fpunch_cd > 0.0:
+		return
+	fpunch_cd = C.FPUNCH_COOLDOWN
+	_add_heat(C.FPUNCH_HEAT)
+	world.spawn_proj("fpunch", "player", origin + look * 0.7 + Vector3(0.0, -0.15, 0.0), look * C.FPUNCH_SPEED,
+			C.FPUNCH_LIFE, C.FPUNCH_RADIUS, C.FPUNCH_DAMAGE * _hot_mult(), C.FPUNCH_KNOCK, false)
+	events.append({"type": "fpunch", "origin": origin, "dir": look})
+
+
+func _try_fwhip(look: Vector3, origin: Vector3) -> void:
+	if fwhip_cd > 0.0:
+		return
+	fwhip_cd = C.FWHIP_COOLDOWN
+	_add_heat(C.FWHIP_HEAT)
+	var hits: int = world.apply_whip(origin, look, C.FWHIP_REACH, C.FWHIP_WIDTH, C.FWHIP_DAMAGE * _hot_mult(), C.FWHIP_KNOCK)
+	whip_flip = not whip_flip
+	events.append({"type": "fwhip", "origin": origin, "dir": look, "hits": hits, "flip": whip_flip})
+
+
+func _try_farcs(look: Vector3, origin: Vector3) -> void:
+	if farc_cd > 0.0:
+		return
+	farc_cd = C.FARC_COOLDOWN
+	_add_heat(C.FARC_HEAT)
+	var right := look.cross(Vector3.UP)
+	right = right.normalized() if right.length() > 0.01 else Vector3.RIGHT
+	var n := C.FARC_COUNT
+	for k in range(n):
+		var t := float(k) - float(n - 1) * 0.5
+		var d := (look + right * t * C.FARC_SPREAD).normalized()
+		world.spawn_proj("farc", "player", origin + look * 1.0 + right * t * 0.3 + Vector3(0.0, -0.25, 0.0), d * C.FARC_SPEED,
+				C.FARC_LIFE, C.FARC_RADIUS, C.FARC_DAMAGE * _hot_mult(), C.FARC_KNOCK, false, 0.0)
+	events.append({"type": "farcs", "origin": origin, "dir": look})
+
+
+func _try_combustion(look: Vector3, origin: Vector3) -> void:
+	if combust_cd > 0.0:
+		return
+	combust_cd = C.COMBUST_COOLDOWN
+	_add_heat(C.COMBUST_HEAT)
+	world.spawn_proj("cbeam", "player", origin + look * 0.8 + Vector3(0.0, -0.2, 0.0), look * C.CBEAM_SPEED,
+			C.CBEAM_LIFE, C.CBEAM_RADIUS, C.COMBUST_DAMAGE * _hot_mult(), 0.0, false)
+	events.append({"type": "combust_cast", "origin": origin, "dir": look})
+
+
+func _try_ring(origin: Vector3) -> void:
+	if ring_cd > 0.0 or soak_t > 0.0:
+		if soak_t > 0.0:
+			events.append({"type": "too_wet"})
+		return
+	ring_cd = C.RING_COOLDOWN
+	guard_t = C.RING_GUARD_TIME
+	_add_heat(C.RING_HEAT)
+	var hits: int = world.fire_ring(pos, C.RING_RADIUS, C.RING_DAMAGE * _hot_mult(), C.RING_KNOCK)
+	events.append({"type": "fring", "pos": pos, "radius": C.RING_RADIUS, "hits": hits})
+
+
+# Q: a burst of fire: FDASH_DIST metres in a moment, where you are heading (or looking). One dash in the air per landing.
+func _fire_dash() -> void:
+	if dash_cd > 0.0 or overheat_t > 0.0 or rush_t > 0.0 or light_t >= 0.0 or swimming:
+		return
+	if not on_ground and dash_air_used:
+		return
+	var d := Vector3(-sin(yaw), 0.0, -cos(yaw))
+	if speed() > 2.0:
+		d = Vector3(vel.x, 0.0, vel.z).normalized()
+	dash_dir = d
+	dash_t = C.FDASH_TIME
+	dash_speed = C.FDASH_DIST * _hot_mult() / C.FDASH_TIME
+	dash_cd = C.FDASH_COOLDOWN
+	if not on_ground:
+		dash_air_used = true
+	if sliding:
+		_end_slide()
+	_add_heat(C.FDASH_HEAT)
+	events.append({"type": "fdash", "pos": pos, "dir": d})
+
+
+func _step_dash(dt: float) -> void:
+	dash_t -= dt
+	vel.x = dash_dir.x * dash_speed
+	vel.z = dash_dir.z * dash_speed
+	if not on_ground:
+		vel.y = 0.0                                       # no falling mid-dash
+	_integrate(dt)
+	if dash_t <= 0.0:
+		dash_t = 0.0
+		var k := minf(1.0, C.FDASH_EXIT_SPEED / maxf(speed(), 0.001))
+		vel.x *= k
+		vel.z *= k
+
+
+# ---- ultimates: Dragon Rush (tap X) and Lightning (hold X)
+
+func _start_rush(look: Vector3) -> void:
+	ult = 0.0
+	rush_t = C.RUSH_TIME
+	rush_dir = look
+	heat = 0.0
+	flaming = false
+	fire_down = false
+	_release_channels()
+	on_ground = false
+	if vel.y < 3.0:
+		vel.y = 3.0
+	events.append({"type": "rush_start", "pos": pos})
+
+
+func _update_rush(dt: float, wish: Vector3) -> void:
+	rush_t = maxf(0.0, rush_t - dt)
+	ult_lock = 0.5
+	water_depth = world.terrain.water_depth_at(pos.x, pos.z)
+	if water_depth >= C.SOAK_DEPTH and pos.y <= world.terrain.surface_at(pos.x, pos.z) + 0.3:
+		rush_t = 0.0                                      # the flame hits the water and goes out
+		soak_t = C.SOAK_TIME
+	heat = 0.0
+	var want := look_dir()
+	var gh := height_above_ground()
+	if gh < C.RUSH_MIN_CLEARANCE and want.y < 0.0:
+		want.y = 0.0                                      # skims the ground rather than ploughing into it
+		want = want.normalized() if want.length() > 0.01 else rush_dir
+	var ang := rush_dir.angle_to(want)
+	if ang > 0.0001:
+		rush_dir = rush_dir.slerp(want, minf(1.0, C.RUSH_TURN * dt / ang)) if ang < 3.1 else want
+	vel = rush_dir * C.RUSH_SPEED
+	on_ground = false
+	air_time = 0.0
+	_integrate(dt)
+	if not events.is_empty() and events.back()["type"] == "land":
+		events.pop_back()                                 # skimming the ground is not a landing
+	on_ground = false
+	world.apply_rush(pos + Vector3(0.0, 1.0, 0.0), rush_dir, dt)
+	_rush_fx_acc += dt
+	if rush_t <= 0.0:
+		var k := minf(1.0, 12.0 / maxf(vel.length(), 0.001))
+		vel *= k
+		events.append({"type": "rush_end", "pos": pos})
+
+
+func _start_lightning() -> void:
+	if not ult_ready() or soak_t > 0.0 or swimming:
+		if soak_t > 0.0 or swimming:
+			events.append({"type": "too_wet"})
+		return
+	light_t = 0.0
+	_release_channels()
+	light_t = 0.0
+	events.append({"type": "lightning_charge", "pos": pos})
+
+
+func _fire_lightning(look: Vector3, origin: Vector3) -> void:
+	var frac := lerpf(C.LIGHT_MIN_FRAC, 1.0, clampf((light_t - C.LIGHT_MIN_CHARGE) / (C.LIGHT_CHARGE - C.LIGHT_MIN_CHARGE), 0.0, 1.0))
+	light_t = -1.0
+	ult = 0.0
+	ult_lock = 0.6
+	var res: Dictionary = world.lightning(origin + Vector3(0.0, -0.15, 0.0), look, C.LIGHT_RANGE, C.LIGHT_DAMAGE * frac)
+	events.append({"type": "lightning_fire", "origin": origin, "dir": look, "frac": frac, "hit": res["hit"], "blocked": res["blocked"]})
+
 
 
 # ------------------------------------------------------------------ mantle
@@ -1867,4 +2272,5 @@ func _integrate(dt: float) -> void:
 		on_ground = true
 		ground_time = 0.0
 		ground_normal = gn
+		dash_air_used = false
 		events.append({"type": "land", "impact": impact})

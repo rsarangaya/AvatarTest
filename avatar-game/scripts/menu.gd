@@ -8,6 +8,7 @@ const Session = preload("res://scripts/session.gd")
 const Moveset = preload("res://scripts/moveset.gd")
 const TutorialView = preload("res://scripts/tutorial_view.gd")
 const OptionsUI = preload("res://scripts/options_ui.gd")
+const MenuBg = preload("res://scripts/menu_bg.gd")
 
 const GAME_SCENE := "res://scenes/main.tscn"
 
@@ -16,6 +17,8 @@ var started := false                   # the last screen was confirmed
 var _holder: CenterContainer
 var _screen: Control
 var _options: Control = null
+var _bg_rect: TextureRect              # the flat gradient: only shown while the 3D backdrop is covered
+var bg3d: Node3D = null                # the 3D backdrop (freed when a game starts)
 
 
 func _ready() -> void:
@@ -24,6 +27,8 @@ func _ready() -> void:
 	Settings.ensure_loaded()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_build_background()
+	bg3d = MenuBg.new()
+	add_child(bg3d)
 	_holder = CenterContainer.new()
 	_holder.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(_holder)
@@ -33,7 +38,7 @@ func _ready() -> void:
 
 
 # Developer shortcut: `godot --path . -- --quick --nation=water --mode=duel --enemy=earth` skips the menus.
-# Flags: --nation= --mode=(duel|bots) --enemy=(auto|air|earth|water) --bots=(fighters|benders) --botnation=
+# Flags: --nation= --mode=(duel|bots) --enemy=(auto|air|earth|water|fire) --bots=(fighters|benders) --botnation=
 static func _flag(args: PackedStringArray, name: String, fallback: String) -> String:
 	for a in args:
 		if a.begins_with("--%s=" % name):
@@ -66,6 +71,8 @@ func _build_background() -> void:
 	bg.stretch_mode = TextureRect.STRETCH_SCALE
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bg.visible = false
+	_bg_rect = bg
 	add_child(bg)
 
 
@@ -74,6 +81,10 @@ func _set_screen(c: Control) -> void:
 		_screen.queue_free()
 	_screen = c
 	_options = null
+	if bg3d != null:                          # the busy text screens cover it: stop drawing and animating it
+		var cov: bool = c is OptionsUI or bool(c.get_meta("covers_bg", false))
+		bg3d.set_covered(cov)
+		_bg_rect.visible = cov
 	_holder.add_child(c)
 
 
@@ -91,7 +102,7 @@ func show_main() -> void:
 	var title := UI.label("AVATAR", 84, Color(0.95, 0.97, 1.0))
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(title)
-	var sub := UI.label("air  -  earth  -  water", 22, Color(0.7, 0.85, 0.95))
+	var sub := UI.label("air  -  earth  -  water  -  fire", 22, Color(0.7, 0.85, 0.95))
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(sub)
 	v.add_child(Control.new())
@@ -207,7 +218,9 @@ func _on_bot_nation(n: String) -> void:
 
 
 func show_tutorials() -> void:
-	_set_screen(_nation_screen("MOVES & TUTORIAL", "Pick a nation to read its moves.", false, Callable(), show_main, ""))
+	var t := _nation_screen("MOVES & TUTORIAL", "Pick a nation to read its moves.", false, Callable(), show_main, "")
+	t.set_meta("covers_bg", true)                 # a wall of text: the backdrop stops
+	_set_screen(t)
 
 
 func show_options() -> void:
@@ -280,6 +293,11 @@ func _nation_screen(title: String, hint: String, allow_auto: bool, on_confirm: C
 func _start_game() -> void:
 	Session.has_played = true
 	started = true
+	if bg3d != null:
+		bg3d.set_covered(true)
+		bg3d.queue_free()
+		bg3d = null
+		_bg_rect.visible = true
 	if not skip_scene_change:
 		get_tree().change_scene_to_file(GAME_SCENE)
 

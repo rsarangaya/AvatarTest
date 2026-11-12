@@ -112,6 +112,8 @@ func _build_environment() -> void:
 	sky_mat.sky_horizon_color = Color(0.74, 0.86, 0.95)
 	sky_mat.ground_horizon_color = Color(0.74, 0.86, 0.95)
 	sky_mat.ground_bottom_color = Color(0.45, 0.55, 0.40)
+	sky_mat.sun_angle_max = 18.0
+	sky_mat.sun_curve = 0.12
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
 	env = Environment.new()
@@ -122,6 +124,13 @@ func _build_environment() -> void:
 	env.fog_enabled = true
 	env.fog_light_color = Color(0.77, 0.88, 0.96)
 	env.fog_density = 0.0035
+	env.fog_sun_scatter = 0.25
+	env.fog_aerial_perspective = 0.35
+	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.tonemap_white = 6.0
+	env.adjustment_enabled = true
+	env.adjustment_contrast = 1.06
+	env.adjustment_saturation = 1.12
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
@@ -139,13 +148,15 @@ func _build_environment() -> void:
 func _ult_active() -> bool:
 	if sim.breath_t > 0.0 or sim.quake_t > 0.0 or sim.octo_t > 0.0 or sim.ult_lock > 0.0 or not sim.slam.is_empty():
 		return true
+	if sim.rush_t > 0.0 or sim.light_t >= 0.0:
+		return true
 	for j in world.jobs:
 		if j["kind"] == "clap" or j["kind"] == "tide":
 			return true
 	for b in world.bots:
 		if not b.alive:
 			continue
-		if b.breath_t > 0.0 or b.octo_t > 0.0:
+		if b.breath_t > 0.0 or b.octo_t > 0.0 or b.light_t > 0.0:
 			return true
 		for pe in b.pending:
 			if String(pe["kind"]).begins_with("clap"):
@@ -353,10 +364,12 @@ func _build_slots(root: Control) -> void:
 	var earth := Color(0.85, 0.62, 0.32)
 	var water := Color(0.45, 0.78, 1.0)
 	var gold := Color(1.0, 0.85, 0.4)
+	var fire := Color(1.0, 0.55, 0.25)
 	var defs := {
 		"air": [["PUNCH", "LMB", air], ["SLICE", "RMB", air], ["SHIELD", "ability_e", air], ["SUCTION", "ability_f", air], ["SCOOTER", "ability_q", air], ["GUST", "2xSPC", air], ["ULT", "ultimate", gold]],
 		"earth": [["ROCK", "LMB", earth], ["BOULDER", "RMB", earth], ["BARRAGE", "ability_z", earth], ["WALL", "ability_e", earth], ["PILLAR", "ability_f", earth], ["ARMOR", "ability_v", earth], ["SKATE", "ability_q", earth], ["ULT", "ultimate", gold]],
 		"water": [["WHIP", "LMB", water], ["HEAL", "RMB", water], ["SHARDS", "ability_z", water], ["ICE WALL", "ability_e", water], ["DISC", "ability_e", water], ["SKATE", "ability_q", water], ["FREEZE", "ability_freeze", water], ["PROPEL", "SPC", water], ["ULT", "ultimate", gold]],
+		"fire": [["PUNCH", "LMB", fire], ["WHIP", "RMB", fire], ["DASH", "ability_q", fire], ["RING", "ability_f", fire], ["ARCS", "ability_z", fire], ["BEAM", "ability_freeze", fire], ["ULT", "ultimate", gold]],
 		"octo": [["L ARM", "LMB", water], ["R ARM", "RMB", water], ["SLAM", "ability_e", water], ["GRAB", "ability_q", water], ["ULT", "ultimate", gold]],
 	}
 	for k in defs:
@@ -417,13 +430,21 @@ func _update_slots(dt: float) -> void:
 			s[5].update_slot(dt, 0.0, 0.0, chi >= sim._cost(C.ICE_SKATE_COST) or sim.skating, sim.skating)
 			s[6].update_slot(dt, 0.0, 0.0, true, sim.freezing)
 			s[7].update_slot(dt, sim.propel_cd, C.PROPEL_COOLDOWN, chi >= sim._cost(C.PROPEL_MIN), sim.propelling)
+		"fire":
+			var hot_ok: bool = sim.overheat_t <= 0.0
+			s[0].update_slot(dt, sim.fpunch_cd, C.FPUNCH_COOLDOWN, hot_ok, sim.flaming)
+			s[1].update_slot(dt, sim.fwhip_cd, C.FWHIP_COOLDOWN, hot_ok, false)
+			s[2].update_slot(dt, sim.dash_cd, C.FDASH_COOLDOWN, hot_ok and (sim.on_ground or not sim.dash_air_used), sim.dash_t > 0.0)
+			s[3].update_slot(dt, sim.ring_cd, C.RING_COOLDOWN, hot_ok and sim.soak_t <= 0.0, sim.guard_t > 0.0)
+			s[4].update_slot(dt, sim.farc_cd, C.FARC_COOLDOWN, hot_ok, false)
+			s[5].update_slot(dt, sim.combust_cd, C.COMBUST_COOLDOWN, hot_ok, false)
 		"octo":
 			s[0].update_slot(dt, sim.octo_cd, C.OCTO_SWIPE_COOLDOWN, true, false)
 			s[1].update_slot(dt, sim.octo_cd_r, C.OCTO_SWIPE_COOLDOWN, true, false)
 			s[2].update_slot(dt, sim.octo_slam_cd, C.OCTO_SLAM_COOLDOWN, true, false)
 			s[3].update_slot(dt, sim.octo_q_cd, C.OCTO_GRAB_COOLDOWN, true, false)
 	# the ultimate meter: the sweep is what is still missing, it flashes when full
-	s[s.size() - 1].update_slot(dt, C.ULT_MAX - sim.ult, C.ULT_MAX, sim.ult_ready(), sim.octo_t > 0.0 or sim.breath_t > 0.0 or sim.quake_t > 0.0, -1, false)
+	s[s.size() - 1].update_slot(dt, C.ULT_MAX - sim.ult, C.ULT_MAX, sim.ult_ready(), sim.octo_t > 0.0 or sim.breath_t > 0.0 or sim.quake_t > 0.0 or sim.rush_t > 0.0 or sim.light_t >= 0.0, -1, false)
 
 
 # The pause menu: Resume / Restart / My moves / Options / Quit to menu. "My moves" and "Options" open inside it.
@@ -793,6 +814,28 @@ func _handle_events() -> void:
 				rig_shake = 1.0
 			"octo_grab", "octo_throw":
 				rig_shake = maxf(rig_shake, 0.35)
+			"fpunch", "fwhip", "farcs":
+				rig_kick = 0.04
+				rig_fov_punch = 2.0
+			"fring":
+				rig_kick = -0.2
+				rig_shake = maxf(rig_shake, 0.6)
+			"fdash":
+				rig_fov_punch = 10.0
+			"combust_cast":
+				rig_kick = 0.1
+				rig_shake = maxf(rig_shake, 0.3)
+			"overheat":
+				rig_shake = maxf(rig_shake, 0.7)
+			"rush_start":
+				rig_fov_punch = 14.0
+				rig_shake = maxf(rig_shake, 0.7)
+			"lightning_charge":
+				rig_fov_punch = -4.0
+			"lightning_fire":
+				rig_kick = 0.2
+				rig_fov_punch = 10.0
+				rig_shake = maxf(rig_shake, 1.0)
 			"launched":
 				rig_kick = 0.12
 				rig_fov_punch = 8.0
@@ -872,7 +915,19 @@ func _update_hud(dt: float) -> void:
 	ult_bar.value = sim.ult
 	var earth: bool = sim.element == "earth"
 	var water: bool = sim.element == "water"
-	var etxt := "WATER" if water else ("EARTH" if earth else "AIR")
+	var fire: bool = sim.element == "fire"
+	var etxt := "FIRE" if fire else ("WATER" if water else ("EARTH" if earth else "AIR"))
+	if fire:
+		if sim.overheat_t > 0.0:
+			etxt = "OVERHEATED  %.1f s" % sim.overheat_t
+		elif sim.rush_t > 0.0:
+			etxt = "DRAGON RUSH  %.1f s" % sim.rush_t
+		elif sim.light_t >= 0.0:
+			etxt = "LIGHTNING  %d%%" % int(100.0 * sim.light_t / C.LIGHT_CHARGE)
+		elif sim.soak_t > 0.0:
+			etxt += "   SOAKED (no ring, no lightning)"
+		elif sim.is_hot():
+			etxt += "   HOT +20%"
 	if earth and sim.armor_on:
 		etxt += "   ARMOR %d%%" % int(round(100.0 * sim.armor_hp / C.ARMOR_HP))
 	if earth and not world.held.is_empty():
@@ -885,10 +940,10 @@ func _update_hud(dt: float) -> void:
 		etxt += "   GATHERING"
 	if water and sim.freezing and sim.octo_t <= 0.0:
 		etxt += "   FREEZE ON"
-	chi_text.text = ("WATER POUCH" + ("   -   FREE HERE (water or ice is close)" if sim.near_water else "")) if water else "CHI"
-	chi_bar.modulate = Color(0.45, 0.78, 1.0) if water else Color(1, 1, 1)
+	chi_text.text = ("INNER FIRE  %d%%" % int(sim.heat)) if fire else (("WATER POUCH" + ("   -   FREE HERE (water or ice is close)" if sim.near_water else "")) if water else "CHI")
+	chi_bar.modulate = (Color(1.0, 0.3, 0.15) if (sim.overheat_t > 0.0 or sim.heat >= 90.0) else (Color(1.0, 0.6, 0.2) if sim.is_hot() else Color(1.0, 0.8, 0.4))) if fire else (Color(0.45, 0.78, 1.0) if water else Color(1, 1, 1))
 	element_label.text = etxt
-	element_label.modulate = Color(0.55, 0.82, 1.0) if water else (Color(0.85, 0.62, 0.32) if earth else Color(0.78, 0.93, 1.0))
+	element_label.modulate = Color(1.0, 0.6, 0.3) if fire else Color(0.55, 0.82, 1.0) if water else (Color(0.85, 0.62, 0.32) if earth else Color(0.78, 0.93, 1.0))
 	if water:
 		var kq := Settings.key_name("ability_q")
 		var ke := Settings.key_name("ability_e")
@@ -896,11 +951,17 @@ func _update_hud(dt: float) -> void:
 				else "LMB whip / hold bullets   hold Space over water: propel   RMB heal   %s ice shards   %s ice wall, again near it: discs   %s ice skate   %s freeze%s   hold %s gather   %s tap octopus / hold wave" \
 				% [Settings.key_name("ability_z"), ke, kq, Settings.key_name("ability_freeze"), " (ON)" if sim.freezing else "", Settings.key_name("ability_f"), Settings.key_name("ultimate")])
 	else:
-		hints_label.text = ("LMB rock/wave  RMB boulder  Z barrage  Q skate  E wall  G grab  F pillar  V armor  hold Space at wall: elevator  X ult   (carrying a wall: LMB throws it)" if earth \
+		hints_label.text = ("LMB punch / hold flame jet   RMB whip   %s dash   %s fire ring   %s arcs   %s combustion beam   tap X dragon rush / hold X lightning (2 s)" 				% [Settings.key_name("ability_q"), Settings.key_name("ability_f"), Settings.key_name("ability_z"), Settings.key_name("ability_freeze")]) if fire else ("LMB rock/wave  RMB boulder  Z barrage  Q skate  E wall  G grab  F pillar  V armor  hold Space at wall: elevator  X ult   (carrying a wall: LMB throws it)" if earth \
 				else "LMB punch / hold blast   RMB slice   E shield   F suction   Q scooter   X ultimate")
 	if sim.octo_t > 0.0:
 		ult_label.text = "OCTOPUS FORM"
 		ult_label.modulate = Color(0.6, 0.85, 1.0, 0.9)
+	elif sim.rush_t > 0.0:
+		ult_label.text = "DRAGON RUSH"
+		ult_label.modulate = Color(1.0, 0.7, 0.4, 0.9)
+	elif sim.ult_ready() and fire:
+		ult_label.text = "ULTIMATE READY  -  tap X: DRAGON RUSH    hold X (2 s): LIGHTNING"
+		ult_label.modulate = Color(1.0, 0.9, 0.5, 0.75 + 0.25 * sin(clock * 8.0))
 	elif sim.ult_ready() and water:
 		ult_label.text = "ULTIMATE READY  -  tap X: OCTOPUS FORM    hold X near water: TIDAL WAVE (%d%% size)" % int(round(100.0 * sim.tide_power))
 		ult_label.modulate = Color(1.0, 0.9, 0.5, 0.75 + 0.25 * sin(clock * 8.0))

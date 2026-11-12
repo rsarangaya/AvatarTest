@@ -49,6 +49,10 @@ func build(p_nation: String) -> void:
 		outfit_col = Color(0.95, 0.74, 0.2)
 		trim_col = Color(0.86, 0.38, 0.1)
 		dark_col = Color(0.88, 0.5, 0.14)
+	elif nation == "fire":
+		outfit_col = Color(0.72, 0.14, 0.1)
+		trim_col = Color(0.95, 0.72, 0.2)
+		dark_col = Color(0.2, 0.08, 0.06)
 	elif nation == "water":
 		outfit_col = Color(0.2, 0.42, 0.74)
 		trim_col = Color(0.84, 0.93, 0.98)
@@ -67,28 +71,28 @@ func build(p_nation: String) -> void:
 	add_child(hips)
 	torso = Node3D.new()
 	hips.add_child(torso)
-	_box(torso, Vector3(0.46, 0.58, 0.26), Vector3(0, 0.29, 0), outfit, _body_nodes)
+	_box(torso, Vector3(0.46, 0.58, 0.26), Vector3(0, 0.29, 0), outfit, _body_nodes, 1)
 	_box(torso, Vector3(0.48, 0.09, 0.28), Vector3(0, 0.03, 0), trim, _body_nodes)
 	head = Node3D.new()
 	head.position = Vector3(0, 0.6, 0)
 	torso.add_child(head)
-	_box(head, Vector3(0.27, 0.28, 0.27), Vector3(0, 0.18, 0), skin, _body_nodes)
+	_box(head, Vector3(0.27, 0.28, 0.27), Vector3(0, 0.18, 0), skin, _body_nodes, 2)
 	if nation == "air":
 		_box(head, Vector3(0.07, 0.12, 0.02), Vector3(0, 0.27, -0.14), _mat(Color(0.3, 0.6, 0.95)), _body_nodes)   # the arrow
 	else:
 		_box(head, Vector3(0.29, 0.06, 0.29), Vector3(0, 0.27, 0), trim, _body_nodes)                               # headband
-		_box(head, Vector3(0.28, 0.1, 0.1), Vector3(0, 0.33, 0.1), dark, _body_nodes)                               # topknot
+		_box(head, Vector3(0.28, 0.1, 0.1), Vector3(0, 0.33, 0.1), dark, _body_nodes, 2)                               # topknot
 
 	for side in [-1, 1]:
 		var sh := Node3D.new()
 		sh.position = Vector3(0.31 * side, 0.5, 0)
 		torso.add_child(sh)
-		_box(sh, Vector3(0.14, 0.3, 0.14), Vector3(0, -0.15, 0), outfit, _arm_nodes)
+		_box(sh, Vector3(0.14, 0.3, 0.14), Vector3(0, -0.15, 0), outfit, _arm_nodes, 1)
 		var el := Node3D.new()
 		el.position = Vector3(0, -0.3, 0)
 		sh.add_child(el)
-		_box(el, Vector3(0.115, 0.27, 0.115), Vector3(0, -0.135, 0), skin, _arm_nodes)
-		_box(el, Vector3(0.13, 0.11, 0.13), Vector3(0, -0.32, 0), skin, _arm_nodes)
+		_box(el, Vector3(0.115, 0.27, 0.115), Vector3(0, -0.135, 0), skin, _arm_nodes, 1)
+		_box(el, Vector3(0.13, 0.11, 0.13), Vector3(0, -0.32, 0), skin, _arm_nodes, 2)
 		if side < 0:
 			sh_l = sh
 			el_l = el
@@ -98,12 +102,12 @@ func build(p_nation: String) -> void:
 		var hp := Node3D.new()
 		hp.position = Vector3(0.12 * side, 0, 0)
 		hips.add_child(hp)
-		_box(hp, Vector3(0.17, 0.42, 0.17), Vector3(0, -0.21, 0), dark, _leg_nodes)
+		_box(hp, Vector3(0.17, 0.42, 0.17), Vector3(0, -0.21, 0), dark, _leg_nodes, 1)
 		var kn := Node3D.new()
 		kn.position = Vector3(0, -0.42, 0)
 		hp.add_child(kn)
-		_box(kn, Vector3(0.145, 0.42, 0.145), Vector3(0, -0.21, 0), dark, _leg_nodes)
-		_box(kn, Vector3(0.16, 0.08, 0.28), Vector3(0, -0.41, -0.05), _mat(Color(0.2, 0.16, 0.13)), _leg_nodes)
+		_box(kn, Vector3(0.145, 0.42, 0.145), Vector3(0, -0.21, 0), dark, _leg_nodes, 1)
+		_box(kn, Vector3(0.16, 0.08, 0.28), Vector3(0, -0.41, -0.05), _mat(Color(0.2, 0.16, 0.13)), _leg_nodes, 2)
 		if side < 0:
 			hip_l = hp
 			kn_l = kn
@@ -122,11 +126,40 @@ func _mat(c: Color) -> StandardMaterial3D:
 	return m
 
 
-func _box(parent: Node3D, size: Vector3, at: Vector3, mat: Material, bucket: Array) -> void:
+# Unit meshes shared by every rig; each part just scales one (box, capsule that fills its size, sphere/ellipsoid).
+static var _unit_meshes := {}
+
+
+static func _unit_mesh(shape: int) -> Mesh:
+	if not _unit_meshes.has(shape):
+		var m: Mesh
+		if shape == 1:
+			var cm := CapsuleMesh.new()
+			cm.radius = 0.5
+			cm.height = 1.5
+			cm.radial_segments = 10
+			cm.rings = 3
+			m = cm
+		elif shape == 2:
+			var sm := SphereMesh.new()
+			sm.radius = 0.5
+			sm.height = 1.0
+			sm.radial_segments = 12
+			sm.rings = 6
+			m = sm
+		else:
+			var bm := BoxMesh.new()
+			bm.size = Vector3.ONE
+			m = bm
+		_unit_meshes[shape] = m
+	return _unit_meshes[shape]
+
+
+# shape: 0 box, 1 capsule (rounded limbs/torso), 2 ellipsoid (head)
+func _box(parent: Node3D, size: Vector3, at: Vector3, mat: Material, bucket: Array, shape := 0) -> void:
 	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = size
-	mi.mesh = bm
+	mi.mesh = _unit_mesh(shape)
+	mi.scale = Vector3(size.x, size.y / 1.5, size.z) if shape == 1 else size
 	mi.position = at
 	mi.material_override = mat
 	parent.add_child(mi)

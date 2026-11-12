@@ -11,6 +11,7 @@ var _chunks: Array = []             # MeshInstance3D per chunk
 var _queue := {}
 var _mat: StandardMaterial3D
 var _cn := FastNoiseLite.new()
+var _hn := FastNoiseLite.new()            # high-frequency colour grain (breaks up the flat per-vertex look)
 var _water_chunks: Array = []       # MeshInstance3D per chunk (mesh only where water touches the chunk)
 var _water_mat: ShaderMaterial
 var _chunk_indices := PackedInt32Array()
@@ -51,6 +52,8 @@ void fragment() {
 func setup(t) -> void:
 	terrain = t
 	_cn.frequency = 0.09
+	_hn.frequency = 0.85
+	_hn.seed = 7
 	_mat = StandardMaterial3D.new()
 	_mat.vertex_color_use_as_albedo = true
 	_mat.vertex_color_is_srgb = true
@@ -144,6 +147,10 @@ func _color(x: float, z: float, y: float, ny: float, i: int) -> Color:
 		var ice_col := Color(0.80, 0.91, 0.98).lerp(Color(0.62, 0.80, 0.95), mott * 0.7) if ice_kind == 1 \
 				else Color(0.55, 0.78, 0.97).lerp(Color(0.80, 0.93, 1.0), mott * 0.6)
 		c = c.lerp(ice_col, 0.94)
+	else:
+		# grain +-8%, a touch lighter high up, darker on steep faces
+		var g := 1.0 + _hn.get_noise_2d(x, z) * 0.08 + C.ss(8.0, 22.0, y) * 0.05 - C.ss(0.85, 0.6, ny) * 0.07
+		c = Color(c.r * g, c.g * g, c.b * g)
 	return c
 
 

@@ -62,6 +62,27 @@ const NATIONS := {
 			]},
 		],
 	},
+	"fire": {
+		"title": "FIRE NATION - fierce, fast and burning hot",
+		"blurb": "No chi: your power is INNER FIRE, the heat bar. Every attack heats it, and above 70% you hit 20% harder and dash further. At 100% you OVERHEAT: no moves for 2 seconds and you are slow. Heat falls only while you are not attacking. Water cools you down fast (and soaked, you cannot use the ring or lightning). Kills cool you too. Short range, no healing, but you melt out of ice in half a second.",
+		"sections": [
+			{"title": "Moves", "entries": [
+				[["Left click"], "Tap: FIRE PUNCH, a quick short-range fireball. Hold: FLAME JET, a 7 m cone that burns without stopping (heats fast)."],
+				[["Right click"], "FIRE WHIP: a 6 m lash of flame."],
+				[["@ability_q"], "FIRE DASH: a 12 m burst of speed where you are heading. One dash in the air per landing, a short cooldown on the ground."],
+				[["@ability_f"], "FIRE RING: a 360 degree burst that burns and throws everything around you back, then a guard for 2 seconds: you take much less damage and every bolt, rock or boulder that flies into it burns up. Your main defense. Water puts it out."],
+				[["@ability_z"], "FLAME ARCS: three crescents of fire (they beat bolts and punches)."],
+				[["@ability_freeze"], "COMBUSTION BEAM: a fast beam, and where it lands the blast comes half a second later. Hurts a lot, melts ice walls."],
+			]},
+			{"title": "Ultimate", "entries": [
+				[["@ultimate", "(tap)"], "DRAGON RUSH for {rush_time} seconds: fly as a jet of fire. Steer with the mouse. Everything near the flame burns. No other moves while it lasts."],
+				[["@ultimate", "(hold)"], "LIGHTNING: hold to charge while you stand focused (slow and open to attack). Let go to fire the bolt where you aim: after 0.8 seconds it does half damage, after 2 seconds full damage (it fires by itself then). Let go sooner and nothing is spent. Stepping into water ends the charge. Earth walls and earth armor stop it; targets standing in water take extra. Nothing can clash with it, and the fire ring guard does not soften ultimates."],
+			]},
+			{"title": "Tips", "entries": [
+				[["Tip"], "Get close and keep moving. Use the ring when you are hurt or surrounded. Watch the heat bar: stop attacking for a moment before it hits 100%."],
+			]},
+		],
+	},
 	"water": {
 		"title": "WATER TRIBE - flowing, tricky and best near water",
 		"blurb": "Your chi bar is the WATER POUCH. Near water or ice every move is free. Away from it the pouch is all you have: it refills slowly by itself, and much faster when you gather by hand.",
@@ -126,7 +147,7 @@ static func _key_text(k: String) -> String:
 
 # Inside a description, [@action] becomes the key that action is bound to.
 static func _text(t: String) -> String:
-	var out := t.replace("{octo_time}", "%d" % int(C.OCTO_TIME))
+	var out := t.replace("{octo_time}", "%d" % int(C.OCTO_TIME)).replace("{rush_time}", "%d" % int(C.RUSH_TIME))
 	for a in Settings.ACTIONS:
 		out = out.replace("[@%s]" % a["id"], "[color=#ffd86b][lb]%s[rb][/color]" % Settings.key_name(String(a["id"])))
 	return out

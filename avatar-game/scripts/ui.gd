@@ -13,6 +13,7 @@ const NATION_COLORS := {
 	"air": Color(0.78, 0.93, 1.0),
 	"earth": Color(0.9, 0.68, 0.38),
 	"water": Color(0.55, 0.82, 1.0),
+	"fire": Color(1.0, 0.55, 0.25),
 }
 
 

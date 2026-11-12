@@ -81,6 +81,20 @@ func _initialize() -> void:
 	# --- main menu
 	ok(find_button("START GAME") != null and find_button("OPTIONS") != null and find_button("EXIT") != null and find_button("MOVES & TUTORIAL") != null, "the main menu offers Start Game, Moves & Tutorial, Options and Exit")
 
+	# --- the 3D backdrop
+	var bg = menu.bg3d
+	ok(bg != null and bg.rigs.size() == 4 and bg.visible, "the menu has a 3D background with 4 benders")
+	var bg_nations := []
+	for r in bg.rigs:
+		bg_nations.append(r.nation)
+	ok(bg_nations == ["air", "earth", "water", "fire"], "the four nations stand in it (%s)" % str(bg_nations))
+	menu.show_options()
+	await settle()
+	ok(not bg.visible and not bg.is_processing(), "the options screen stops and hides the backdrop")
+	menu.show_main()
+	await settle()
+	ok(bg.visible, "back at the main menu the backdrop is shown again")
+
 	# --- duel flow: mode, my nation (with the tutorial), enemy nation
 	press("START GAME")
 	await settle()
@@ -99,6 +113,9 @@ func _initialize() -> void:
 	press("EARTH KINGDOM")
 	await settle()
 	ok(screen_has_text("EARTH WALL"), "picking Earth Kingdom shows the earth moves")
+	press("FIRE NATION")
+	await settle()
+	ok(screen_has_text("FLAME JET") and screen_has_text("FIRE RING") and screen_has_text("LIGHTNING") and not find_button("CONFIRM").disabled, "picking Fire Nation shows the fire moves")
 	press("WATER TRIBE")
 	await settle()
 	press("CONFIRM")
@@ -111,6 +128,8 @@ func _initialize() -> void:
 	press("CONFIRM AND PLAY")
 	await settle()
 	ok(menu.started and Session.enemy_nation == "earth", "confirming starts the game with the enemy nation (%s)" % Session.enemy_nation)
+	await settle()
+	ok(menu.bg3d == null and not is_instance_valid(bg), "starting a game frees the 3D background")
 
 	# --- back works
 	menu.show_main()
@@ -240,6 +259,28 @@ func test_games() -> void:
 	ok(is_finite(boss.pos.x) and boss.alive, "a minute of the water duelist fighting stays sane")
 	ok(seen.has("bot_cast") and (seen.has("bot_whip") or seen.has("bot_jet") or seen.has("ice_wall_rise") or seen.has("bot_heal") or seen.has("bot_octo")), "the water duelist casts its water moves (%s)" % ", ".join(seen.keys().filter(func(k): return String(k).begins_with("bot_") or String(k).begins_with("ice"))))
 	game.free()
+	await settle()
+
+	# a fire duel: fire player (heat bar, fire HUD row) against the fire duelist
+	Session.mode = "duel"
+	Session.player_nation = "fire"
+	Session.enemy_nation = "fire"
+	var fgame = load("res://scenes/main.tscn").instantiate()
+	root.add_child(fgame)
+	await settle()
+	ok(fgame.sim.element == "fire" and fgame.world.bots[0].nation == "fire" and fgame.slot_nodes.has("fire"), "a fire duel starts with a fire player and a fire enemy")
+	fgame.captured = true
+	fgame.round_t = 0.0
+	var fboss = fgame.world.bots[0]
+	fboss.ult_charge = 1.0
+	for i in range(120 * 25):
+		fgame.sim.step(1.0 / 120.0, fgame.inp)
+		fgame.sim.hp = 100.0
+		fgame.world.events.clear()
+		fgame.sim.events.clear()
+	fgame._update_hud(0.016)
+	ok(is_finite(fboss.pos.x) and fgame.chi_text.text.begins_with("INNER FIRE"), "25 s of a fire duel stays sane and the HUD shows the heat bar")
+	fgame.free()
 	await settle()
 
 	Session.mode = "bots"

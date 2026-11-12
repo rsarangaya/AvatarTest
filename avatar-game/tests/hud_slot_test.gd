@@ -25,7 +25,7 @@ func settle() -> void:
 func _initialize() -> void:
 	Settings.persist = false
 	Settings.ensure_loaded()
-	for el in ["air", "earth", "water"]:
+	for el in ["air", "earth", "water", "fire"]:
 		await check_element(el)
 	print("")
 	print("ALL PASSED" if failures == 0 else "%d FAILURE(S)" % failures)
@@ -59,19 +59,23 @@ func check_element(el: String) -> void:
 
 	# cooldown: the basic attack's sweep is down while it runs, and it is usable with chi
 	sim.chi = C.CHI_MAX
-	sim.punch_cd = 0.1
+	var cd_name := "fpunch_cd" if el == "fire" else "punch_cd"
+	sim.set(cd_name, 0.1)
 	game._update_slots(0.0)
 	ok(basic._sweep_px > 0 and basic._usable, "%s: a basic attack on cooldown shows a sweep" % el)
 
 	# ready: the sweep clears again
-	sim.punch_cd = 0.0
+	sim.set(cd_name, 0.0)
 	game._update_slots(0.0)
 	ok(basic._sweep_px == 0, "%s: the basic attack clears its sweep when ready" % el)
 
 	# unusable: no chi dims the slot
 	sim.chi = 0.0
+	if el == "fire":
+		sim.overheat_t = 2.0                          # a firebender has no chi: overheating is what stops the moves
 	game._update_slots(0.0)
-	ok(not basic._usable, "%s: with no chi the basic attack is marked unusable" % el)
+	ok(not basic._usable, "%s: with no chi (or overheated) the basic attack is marked unusable" % el)
+	sim.overheat_t = 0.0
 
 	# the ultimate flashes when it fills up (the sweep is what is still missing)
 	sim.chi = C.CHI_MAX

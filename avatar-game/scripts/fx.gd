@@ -11,10 +11,28 @@ const EARTH := Color(0.62, 0.47, 0.30)
 const DUST := Color(0.68, 0.58, 0.44)
 const WATER := Color(0.45, 0.78, 1.0)
 const ICE := Color(0.82, 0.94, 1.0)
+const FIRE := Color(1.0, 0.55, 0.15)
+const FIRE_HOT := Color(1.0, 0.85, 0.4)
+const BOLT_BLUE := Color(0.75, 0.88, 1.0)
 const MAX_DEBRIS := 240
+const MAX_EFFECTS := 140          # live rings / domes / labels at once: more are simply not spawned (keeps nodes and draw calls flat)
+const PUFFS := 56                 # the pooled flame particles (flame jet, rush trail, ring burst, bot flames, sparks)
 const OCTO_BEADS := 40
 const OCTO_LEN := 15.0           # how far the arms are drawn (the hit reach is C.OCTO_REACH)
 const WHIP_BEADS := 22
+
+# Ice: glossy, a rim of light at grazing angles and a faint inner glow. One shader, shared materials.
+const ICE_SRC := "
+shader_type spatial;
+uniform vec4 tint : source_color = vec4(0.8, 0.93, 1.0, 1.0);
+void fragment() {
+	float f = pow(1.0 - clamp(dot(normalize(NORMAL), normalize(VIEW)), 0.0, 1.0), 3.0);
+	ALBEDO = tint.rgb;
+	EMISSION = vec3(0.35, 0.65, 1.0) * (0.22 + f * 0.9);
+	ROUGHNESS = 0.12;
+	SPECULAR = 0.8;
+}
+"
 
 # One shader for every "bubble of moving air": soft rim, scrolling streaks, fadeable.
 const BUBBLE_SRC := "
@@ -68,7 +86,12 @@ var _hemi_mesh: SphereMesh
 var _crescent_mesh: ArrayMesh
 var _effects: Array = []
 var _debris: Array = []
-var _debris_mesh: BoxMesh
+var _debris_mesh: Mesh
+var _ice_chunk_mesh: Mesh
+var _ice_block_mesh: Mesh
+var _ice_block_mat: ShaderMaterial
+var _ice_warm: MeshInstance3D
+var _proj_rock_mat: StandardMaterial3D
 var _debris_mats: Array = []
 var _rng := RandomNumberGenerator.new()
 var _quake_fx_t := 0.0
@@ -90,7 +113,7 @@ var body_rigs: Dictionary = {}
 var arm_rigs: Dictionary = {}
 var _bot_last_t := 0.0
 var charge_rock: MeshInstance3D
-var _lump_mesh: SphereMesh
+var _lump_mesh: Mesh
 var boulder_node: MeshInstance3D
 var _rock_mat: StandardMaterial3D
 var _pulls: Array = []
@@ -134,6 +157,29 @@ var _breath_t := 0.0
 var _wake_t := 0.0
 var _trail_t := 0.0
 var _charge_t := 0.0
+# fire: pooled flame puffs (fixed nodes and materials, reused; nothing is allocated while they run)
+var _puff_nodes: Array = []
+var _puff_mats: Array = []
+var _puff_t := PackedFloat32Array()
+var _puff_life := PackedFloat32Array()
+var _puff_size := PackedFloat32Array()
+var _puff_vel := PackedVector3Array()
+var _puff_col := PackedColorArray()
+var _puff_next := 0
+var _puff_live := 0
+var flame_cone: MeshInstance3D
+var flame_core: MeshInstance3D
+var guard_dome: MeshInstance3D
+var rush_shell: MeshInstance3D
+var light_orb: MeshInstance3D
+var _fire_core_mat: StandardMaterial3D
+var _fire_glow_mat: StandardMaterial3D
+var _bolt_core_mat: StandardMaterial3D
+var _flame_t := 0.0
+var _rush_t := 0.0
+var _spark_t := 0.0
+var _beam_mesh: CylinderMesh
+var _warm := 3                    # frames of shader / font warm-up still to run after the game starts
 
 
 func setup(w, s, c: Camera3D) -> void:
@@ -159,8 +205,19 @@ func setup(w, s, c: Camera3D) -> void:
 	_hemi_mesh.radial_segments = 48
 	_hemi_mesh.rings = 16
 	_crescent_mesh = _build_crescent()
-	_debris_mesh = BoxMesh.new()
-	_debris_mesh.size = Vector3.ONE
+	_debris_mesh = _make_rock(8, 5, 0.62, 0.28, true)          # one shared faceted chunk instead of cubes
+	_ice_chunk_mesh = _make_crystal(6, 0.28, 0.5, 1.2)
+	_ice_block_mesh = _make_crystal(6, 0.5, 0.62, 2.15)
+	var ice_sh := Shader.new()
+	ice_sh.code = ICE_SRC
+	var ice_sh_a := Shader.new()
+	ice_sh_a.code = ICE_SRC.replace("shader_type spatial;", "shader_type spatial; render_mode cull_disabled;").replace("SPECULAR = 0.8;", "SPECULAR = 0.8; ALPHA = mix(tint.a, 1.0, f * 0.6);")
+	_ice_block_mat = ShaderMaterial.new()
+	_ice_block_mat.shader = ice_sh_a
+	_ice_block_mat.set_shader_parameter("tint", Color(0.7, 0.88, 1.0, 0.5))
+	_proj_rock_mat = StandardMaterial3D.new()
+	_proj_rock_mat.albedo_color = Color(0.45, 0.36, 0.27)
+	_proj_rock_mat.roughness = 1.0
 	for dc in [Color(0.47, 0.34, 0.22), Color(0.40, 0.30, 0.20), Color(0.56, 0.52, 0.46), Color(0.34, 0.30, 0.26)]:
 		var m := StandardMaterial3D.new()
 		m.albedo_color = dc
@@ -177,9 +234,9 @@ func setup(w, s, c: Camera3D) -> void:
 	_ice_slab_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	_ice_slab_mat.roughness = 0.1
 	for ic in [Color(0.80, 0.93, 1.0), Color(0.66, 0.85, 0.97), Color(0.9, 0.97, 1.0)]:
-		var im := StandardMaterial3D.new()
-		im.albedo_color = ic
-		im.roughness = 0.15
+		var im := ShaderMaterial.new()
+		im.shader = ice_sh
+		im.set_shader_parameter("tint", Color(ic.r, ic.g, ic.b, 1.0))
 		_ice_debris_mats.append(im)
 	var slab_mesh := BoxMesh.new()
 	slab_mesh.size = Vector3(2.2, 0.32, 2.6)
@@ -191,12 +248,7 @@ func setup(w, s, c: Camera3D) -> void:
 	_rock_mat = StandardMaterial3D.new()
 	_rock_mat.albedo_color = Color(0.46, 0.37, 0.28)
 	_rock_mat.roughness = 1.0
-	var lump := SphereMesh.new()                     # a faceted lump of rock
-	lump.radius = 1.0
-	lump.height = 2.0
-	lump.radial_segments = 7
-	lump.rings = 4
-	_lump_mesh = lump
+	_lump_mesh = _make_rock(12, 8, 1.0, 0.16, false)     # smooth lumpy boulder (shared by the charge rock and the boulder)
 	for k in range(2):
 		var fr := MeshInstance3D.new()
 		var fm := BoxMesh.new()
@@ -272,8 +324,10 @@ func setup(w, s, c: Camera3D) -> void:
 			wbeads.append(_shell(_sphere_mesh, whip_mat))
 		whip_chains.append(wbeads)
 	_build_shard()
+	_build_fire_fx(cone)
+	_ice_warm = _shell(_ice_block_mesh, _ice_block_mat)
 
-	for nat in ["air", "earth", "water"]:
+	for nat in ["air", "earth", "water", "fire"]:
 		var br = RigScript.new()
 		br.build(nat)
 		br.set_view("legs")
@@ -335,6 +389,90 @@ func _shell(mesh: Mesh, mat: Material) -> MeshInstance3D:
 
 # Crescent moon facing the thrower (XY plane, perpendicular to travel), bulging upward, with the
 # tips swept back along +Z so it reads as a blade cutting forward. Rolled per throw for a diagonal slash.
+# A lumpy rock: a UV sphere pushed in and out by a smooth direction-based function (so seams match).
+# flat = true gives a faceted look (each triangle has its own normal); false keeps the smooth sphere normals.
+func _make_rock(radial: int, rings: int, radius: float, amp: float, flat: bool) -> ArrayMesh:
+	var sm := SphereMesh.new()
+	sm.radius = 1.0
+	sm.height = 2.0
+	sm.radial_segments = radial
+	sm.rings = rings
+	var src: Array = sm.get_mesh_arrays()
+	var sv: PackedVector3Array = src[Mesh.ARRAY_VERTEX]
+	var si: PackedInt32Array = src[Mesh.ARRAY_INDEX]
+	var pv := PackedVector3Array()
+	pv.resize(sv.size())
+	for k in range(sv.size()):
+		var n := sv[k].normalized()
+		var f := 1.0 + amp * (0.55 * sin(n.x * 3.1 + 1.3) * sin(n.y * 2.7 + 2.1) + 0.45 * sin(n.z * 4.3 + n.x * 2.0)) - amp * 0.3
+		pv[k] = n * radius * f
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	if flat:
+		var fv := PackedVector3Array()
+		var fn := PackedVector3Array()
+		var t := 0
+		while t + 2 < si.size():
+			var a := pv[si[t]]
+			var b := pv[si[t + 1]]
+			var c := pv[si[t + 2]]
+			var nn := (c - a).cross(b - a).normalized()      # Godot's front faces wind clockwise
+			fv.append(a)
+			fv.append(b)
+			fv.append(c)
+			fn.append(nn)
+			fn.append(nn)
+			fn.append(nn)
+			t += 3
+		arr[Mesh.ARRAY_VERTEX] = fv
+		arr[Mesh.ARRAY_NORMAL] = fn
+	else:
+		var nm := PackedVector3Array()
+		nm.resize(sv.size())
+		for k in range(sv.size()):
+			nm[k] = sv[k].normalized()
+		arr[Mesh.ARRAY_VERTEX] = pv
+		arr[Mesh.ARRAY_NORMAL] = nm
+		arr[Mesh.ARRAY_INDEX] = si
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	return mesh
+
+
+# A chamfered crystal prism: n-sided, tapering toward a short pointed cap (flat-shaded facets), centred, `height` tall.
+func _make_crystal(n: int, top_r: float, bot_r: float, height: float) -> ArrayMesh:
+	var hh := height * 0.5
+	var cap := height * 0.16
+	var ring_lo: Array = []
+	var ring_hi: Array = []
+	for k in range(n):
+		var a := TAU * float(k) / float(n)
+		ring_lo.append(Vector3(cos(a) * bot_r, -hh, sin(a) * bot_r))
+		ring_hi.append(Vector3(cos(a) * top_r, hh - cap, sin(a) * top_r))
+	var apex := Vector3(0.0, hh, 0.0)
+	var base_c := Vector3(0.0, -hh, 0.0)
+	var vs := PackedVector3Array()
+	var ns := PackedVector3Array()
+	for k in range(n):
+		var k2 := (k + 1) % n
+		var tris := [[ring_lo[k], ring_hi[k], ring_lo[k2]], [ring_lo[k2], ring_hi[k], ring_hi[k2]],
+				[ring_hi[k], apex, ring_hi[k2]], [base_c, ring_lo[k], ring_lo[k2]]]
+		for tr in tris:
+			var nn: Vector3 = ((tr[1] - tr[0]).cross(tr[2] - tr[0])).normalized()
+			if tr[0] == base_c:
+				nn = Vector3.DOWN
+			for q in [tr[0], tr[2], tr[1]]:                   # clockwise = front in Godot
+				vs.append(q)
+				ns.append(nn)
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = vs
+	arr[Mesh.ARRAY_NORMAL] = ns
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	return mesh
+
+
 func _build_crescent() -> ArrayMesh:
 	var radius := 1.65
 	var half_angle := 1.15
@@ -371,6 +509,8 @@ func _build_crescent() -> ArrayMesh:
 # A flat ring that grows (r0 -> r1), optionally travels (at -> to) and fades.
 func ring(at: Vector3, normal: Vector3, r1: float, dur: float, delay := 0.0, color := AIR,
 		r0 := 0.05, to := Vector3.INF, peak := 0.75, fade_in := false) -> void:
+	if _effects.size() >= MAX_EFFECTS:
+		return
 	var mat := _flat(color, 0.0)
 	var mi := _inst(_ring_mesh, mat)
 	add_child(mi)
@@ -384,6 +524,8 @@ func ring(at: Vector3, normal: Vector3, r1: float, dur: float, delay := 0.0, col
 
 # Expanding translucent half-sphere (the Air Bomb shockwave).
 func dome(at: Vector3, r1: float, dur: float, tint := Color(0.9, 0.98, 1.0)) -> void:
+	if _effects.size() >= MAX_EFFECTS:
+		return
 	var mat := _bubble(tint, 0.1, 0.9, 1.6, 4.0, 12.0, 0.4)
 	var mi := _inst(_hemi_mesh, mat)
 	add_child(mi)
@@ -455,7 +597,7 @@ func debris(at: Vector3, count: int, speed: float, size := 0.22, spread := 1.0, 
 		if _debris.size() >= MAX_DEBRIS:
 			return
 		var mi := MeshInstance3D.new()
-		mi.mesh = _debris_mesh
+		mi.mesh = _ice_chunk_mesh if icy else _debris_mesh
 		mi.material_override = pal[_rng.randi() % pal.size()]
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		var sz := size * _rng.randf_range(0.5, 1.7)
@@ -525,8 +667,17 @@ func _rig_event(ev: Dictionary) -> void:
 			ar.trigger("gust", 0.3)
 		"clap":
 			ar.trigger("slam", 0.8)
-		"whip":
+		"whip", "fwhip":
 			ar.trigger("slash", 0.28)
+		"fpunch":
+			ar.trigger("punch", 0.2, 1 if _punch_side else -1)
+			_punch_side = not _punch_side
+		"farcs", "combust_cast":
+			ar.trigger("thrust", 0.4)
+		"fring", "rush_start", "lightning_fire":
+			ar.trigger("slam", 0.6)
+		"fdash":
+			ar.trigger("gust", 0.3)
 		"shards", "disc_throw":
 			ar.trigger("thrust", 0.4)
 		"ice_wall", "heal":
@@ -597,6 +748,57 @@ func on_sim_event(ev: Dictionary, feet: Vector3) -> void:
 			var bd: Vector3 = ev["dir"]
 			ring(feet + Vector3(0, 1.4, 0) + bd * 1.1, bd, 0.5, 0.15, 0.0, WATER, 0.1, Vector3.INF, 0.6)
 		"slab_throw":
+			pass
+		"fpunch":
+			var fpo: Vector3 = ev["origin"]
+			puff(fpo + Vector3(ev["dir"]) * 1.0, Vector3(ev["dir"]) * 4.0, 0.25, 0.3, FIRE_HOT)
+		"fwhip":
+			var fwo: Vector3 = ev["origin"]
+			var fwd: Vector3 = ev["dir"]
+			var fwr := fwd.cross(Vector3.UP)
+			fwr = fwr.normalized() if fwr.length() > 0.01 else Vector3.RIGHT
+			var fws := 1.0 if bool(ev["flip"]) else -1.0
+			var fwp := fwo + fwd * 0.8 + Vector3(0.0, -0.3, 0.0) + fwr * 0.3 * fws
+			for k in range(4):
+				var fwn := fwp + fwd * (C.FWHIP_REACH * float(k + 1) / 4.0) + fwr * sin(float(k + 1) * 1.7) * 0.5 * fws
+				beam(fwp, fwn, 0.12 - 0.02 * float(k), 0.22, FIRE, 0.9)
+				fwp = fwn
+		"farcs":
+			var fao: Vector3 = ev["origin"]
+			_fire_burst(fao + Vector3(ev["dir"]) * 1.2, 5, 5.0, 0.3)
+		"combust_cast":
+			var fco: Vector3 = ev["origin"]
+			ring(fco + Vector3(ev["dir"]) * 1.2, ev["dir"], 1.0, 0.25, 0.0, FIRE_HOT, 0.2)
+		"fring":
+			var frp: Vector3 = ev["pos"]
+			var frr: float = ev["radius"]
+			dome(frp, frr, 0.45, Color(1.0, 0.55, 0.15))
+			ring(frp + Vector3(0, 0.15, 0), Vector3.UP, frr * 1.1, 0.45, 0.0, FIRE, 0.6, Vector3.INF, 0.9)
+			ring(frp + Vector3(0, 1.0, 0), Vector3.UP, frr, 0.5, 0.06, FIRE_HOT, 0.5, Vector3.INF, 0.7)
+			_fire_burst(frp, 22, 12.0, 0.45)
+		"fdash":
+			var fdp: Vector3 = ev["pos"]
+			var fdd: Vector3 = ev["dir"]
+			ring(fdp + Vector3(0, 0.2, 0), Vector3.UP, 2.2, 0.35, 0.0, FIRE, 0.4)
+			for k in range(6):
+				puff(fdp + Vector3(0.0, 0.6, 0.0) + fdd * float(k) * 1.6, Vector3(_rng.randf_range(-1.0, 1.0), _rng.randf_range(0.0, 1.0), _rng.randf_range(-1.0, 1.0)), 0.45, 0.5, FIRE)
+		"overheat":
+			var fop: Vector3 = ev["pos"]
+			ring(fop + Vector3(0, 1.0, 0), Vector3.UP, 2.4, 0.5, 0.0, Color(1.0, 0.3, 0.15), 0.5)
+			floating_text(fop + Vector3(0, 2.4, 0), "OVERHEATED", Color(1.0, 0.4, 0.2))
+		"too_wet":
+			floating_text(feet + Vector3(0, 2.4, 0), "TOO WET", Color(0.6, 0.85, 1.0))
+		"rush_start":
+			var frs: Vector3 = ev["pos"]
+			dome(frs + Vector3(0, 0.1, 0), 4.0, 0.5, Color(1.0, 0.5, 0.15))
+			floating_text(frs + Vector3(0, 2.5, 0), "DRAGON RUSH", FIRE)
+			_fire_burst(frs, 18, 10.0, 0.5)
+		"rush_end":
+			ring(Vector3(ev["pos"]) + Vector3(0, 0.5, 0), Vector3.UP, 3.0, 0.5, 0.0, FIRE, 0.5)
+		"lightning_charge":
+			floating_text(feet + Vector3(0, 2.5, 0), "LIGHTNING", BOLT_BLUE)
+			ring(feet + Vector3(0, 0.15, 0), Vector3.UP, 2.8, 2.0, 0.0, BOLT_BLUE, 0.3, Vector3.INF, 0.6, true)
+		"lightning_fire":
 			pass
 		"disc_throw":
 			var dd: Vector3 = ev["dir"]
@@ -704,10 +906,10 @@ func on_sim_event(ev: Dictionary, feet: Vector3) -> void:
 			ring(feet + Vector3(0, 1.5, 0), Vector3.UP, 5.0, 0.35)
 		"element":
 			var which := String(ev["element"])
-			var ecol: Color = EARTH if which == "earth" else (WATER if which == "water" else AIR)
+			var ecol: Color = EARTH if which == "earth" else (WATER if which == "water" else (FIRE if which == "fire" else AIR))
 			ring(feet + Vector3(0, 0.15, 0), Vector3.UP, 2.4, 0.4, 0.0, ecol)
 			ring(feet + Vector3(0, 1.0, 0), Vector3.UP, 1.6, 0.35, 0.05, ecol)
-			floating_text(feet + Vector3(0, 2.3, 0), which.to_upper(), Color(0.9, 0.7, 0.4) if which == "earth" else (WATER if which == "water" else Color(0.85, 0.96, 1.0)))
+			floating_text(feet + Vector3(0, 2.3, 0), which.to_upper(), Color(0.9, 0.7, 0.4) if which == "earth" else (WATER if which == "water" else (FIRE if which == "fire" else Color(0.85, 0.96, 1.0))))
 		"launched":
 			ring(feet + Vector3(0, 0.1, 0), Vector3.UP, 3.0, 0.4, 0.0, EARTH)
 			debris(feet, 8, 6.0)
@@ -780,7 +982,7 @@ func on_world_event(ev: Dictionary) -> void:
 			if _bot_views.has(ev["bot"]):
 				var bk := String(ev["kind"])
 				_bot_views[ev["bot"]]["rig"].trigger("thrust" if bk == "shield" else bk, 0.32)
-				var cc := AIR if ev["bot"].nation == "air" else (WATER if ev["bot"].nation == "water" else EARTH)
+				var cc := AIR if ev["bot"].nation == "air" else (WATER if ev["bot"].nation == "water" else (FIRE if ev["bot"].nation == "fire" else EARTH))
 				ring(ev["pos"], Vector3.UP, 1.2, 0.3, 0.0, cc, 0.35)
 				if bk == "stomp" or bk == "raise" or bk == "slam":
 					debris(ev["bot"].pos, 5, 4.5, 0.16)
@@ -859,6 +1061,9 @@ func on_world_event(ev: Dictionary) -> void:
 			elif kind == "wbullet":
 				ring(ev["pos"], Vector3.UP, 1.0, 0.2, 0.0, WATER, 0.1, Vector3.INF, 0.6)
 				debris(ev["pos"], 3, 4.0, 0.08, 0.3, 1.0, true)
+			if kind == "fpunch" or kind == "farc":
+				_fire_burst(ev["pos"], 3, 4.0, 0.3)
+				return
 			var col2 := BOLT if kind == "bolt" else (EARTH if (kind == "rock" or kind == "boulder") else AIR)
 			ring(ev["pos"], Vector3.UP, 1.1, 0.25, 0.0, col2, 0.2)
 			if kind == "rock":
@@ -896,14 +1101,47 @@ func on_world_event(ev: Dictionary) -> void:
 			debris(tp + Vector3(0, 0.3, 0), 14, 6.0, 0.14, float(ev["radius"]) * 0.4, 1.0, true)
 		"bot_jet":
 			ring(ev["pos"], ev["dir"], 1.4, 0.4, 0.0, WATER, 0.6, ev["pos"] + ev["dir"] * 15.0, 0.5)
+		"bot_flame":
+			var bfd: Vector3 = ev["dir"]
+			for k in range(2):
+				puff(ev["pos"], bfd * 10.0 + Vector3(_rng.randf_range(-1.0, 1.0), _rng.randf_range(-0.3, 0.8), _rng.randf_range(-1.0, 1.0)), 0.4, 0.34, FIRE)
+		"bot_overheat":
+			floating_text(Vector3(ev["pos"]) + Vector3(0, 1.4, 0), "OVERHEATED", Color(1.0, 0.4, 0.2))
+			_fire_burst(ev["pos"], 6, 4.0, 0.3)
+		"bot_charge":
+			var bcp: Vector3 = ev["pos"]
+			ring(bcp + Vector3(0, 0.1, 0), Vector3.UP, 3.0, float(ev["dur"]), 0.0, BOLT_BLUE, 0.3, Vector3.INF, 0.8, true)
+			floating_text(bcp + Vector3(0, 2.0, 0), "LIGHTNING!", BOLT_BLUE)
+		"lightning":
+			lightning_bolt(ev["from"], ev["to"], bool(ev["hit"]))
+		"fire_ring":
+			var wrp: Vector3 = ev["pos"]
+			var wrr: float = ev["radius"]
+			dome(wrp, wrr, 0.45, Color(1.0, 0.55, 0.15))
+			ring(wrp + Vector3(0, 0.15, 0), Vector3.UP, wrr * 1.1, 0.45, 0.0, FIRE, 0.6, Vector3.INF, 0.9)
+			_fire_burst(wrp, 14, 10.0, 0.45)
+		"ring_block":
+			_fire_burst(ev["pos"], 3, 3.0, 0.25, FIRE_HOT)
+		"combust_arm":
+			var cap: Vector3 = ev["pos"]
+			ring(cap + Vector3(0, 0.15, 0), Vector3.UP, float(ev["radius"]), float(ev["delay"]), 0.0, FIRE, 0.4, Vector3.INF, 0.9)
+			puff(cap + Vector3(0, 0.5, 0), Vector3(0.0, 1.0, 0.0), float(ev["delay"]), 0.5, FIRE_HOT)
+		"combust":
+			var cbp: Vector3 = ev["pos"]
+			var cbr: float = ev["radius"]
+			dome(cbp, cbr, 0.45, Color(1.0, 0.6, 0.2))
+			ring(cbp + Vector3(0, 0.2, 0), Vector3.UP, cbr * 1.2, 0.5, 0.0, FIRE_HOT, 0.4, Vector3.INF, 0.9)
+			_fire_burst(cbp, 20, 12.0, 0.55)
+			debris(cbp, 10, 9.0, 0.25, 1.5)
 		"bot_whip":
 			var wf: Vector3 = ev["from"]
 			var wt: Vector3 = ev["to"]
 			var wmid := (wf + wt) * 0.5 + Vector3(0.0, 0.5, 0.0)
 			var thick := 0.16 if bool(ev["big"]) else 0.1
-			beam(wf, wmid, thick, 0.25, WATER, 0.9)
-			beam(wmid, wt, thick * 0.7, 0.25, WATER, 0.9)
-			ring(wt, Vector3.UP, 1.4, 0.3, 0.05, WATER, 0.3)
+			var wcol := FIRE if bool(ev.get("fire", false)) else WATER
+			beam(wf, wmid, thick, 0.25, wcol, 0.9)
+			beam(wmid, wt, thick * 0.7, 0.25, wcol, 0.9)
+			ring(wt, Vector3.UP, 1.4, 0.3, 0.05, wcol, 0.3)
 		"bot_octo":
 			var bo: Vector3 = ev["pos"]
 			dome(bo, 4.0, 0.5, Color(0.4, 0.72, 1.0))
@@ -1268,6 +1506,7 @@ func update(dt: float, feet: Vector3) -> void:
 			bead.position = p
 			bead.scale = Vector3.ONE * lerpf(0.22, 0.1, t) * _octo_scale
 
+	_update_fire_views(dt, feet, eye, look)
 	_update_whips(dt, eye, look, cb)
 	_update_beams(dt)
 	_update_tides(dt)
@@ -1275,6 +1514,189 @@ func update(dt: float, feet: Vector3) -> void:
 	_update_debris(dt)
 	_sync_projectiles()
 	update_bots()
+	if _warm > 0:
+		_warm_up()
+
+
+# Draws every effect shader once, tiny and nearly invisible, and builds the floating texts once (behind the camera), so the
+# first real use in a fight does not hitch on shader compiles or glyph building. Runs in the first frames of a game.
+func _warm_up() -> void:
+	var fwd: Vector3 = -cam.global_transform.basis.z
+	var at: Vector3 = cam.global_position + fwd * 1.5
+	var shells: Array = [scooter_shell, scooter_ball, shield_node, charge_orb, aura, breath_cone, breath_core, jet_cone, jet_core,
+			flame_cone, flame_core, guard_dome, rush_shell, light_orb, _ice_warm]
+	if _warm == 3:
+		debris(at, 1, 0.0, 0.001, 0.0, 0.0, true)
+		debris(at, 1, 0.0, 0.001, 0.0, 0.0, false)
+		puff(at, Vector3.ZERO, 0.06, 0.001, BOLT_BLUE)
+		puff(at, Vector3.ZERO, 0.06, 0.001, FIRE)
+		beam(at, at + Vector3(0.0, 0.01, 0.0), 0.001, 0.06, FIRE, 0.02)
+		beam(at, at + Vector3(0.0, 0.01, 0.0), 0.001, 0.06, BOLT_BLUE, 0.02)
+		beam(at, at + Vector3(0.0, 0.01, 0.0), 0.001, 0.06, WATER, 0.02)
+		ring(at, Vector3.UP, 0.001, 0.06, 0.0, FIRE, 0.001, Vector3.INF, 0.02)
+		dome(at, 0.001, 0.06, Color(1.0, 0.55, 0.15))
+		var behind: Vector3 = cam.global_position - fwd * 3.0
+		for t in ["OVERHEATED", "LIGHTNING", "LIGHTNING!", "DRAGON RUSH", "TOO WET", "FROZEN", "FREEZE ON", "THAW", "0123456789"]:
+			floating_text(behind, t, FIRE)
+	for s in shells:
+		var m: MeshInstance3D = s
+		m.visible = true
+		m.position = at
+		m.scale = Vector3.ONE * 0.001
+	_warm -= 1
+	if _warm == 0:
+		for s in shells:
+			(s as MeshInstance3D).visible = false
+
+
+# ------------------------------------------------------------------ firebending visuals
+# Everything below reuses fixed nodes and shared materials: a flame jet, a rush or a ring costs no allocations per frame.
+
+func _build_fire_fx(cone: Mesh) -> void:
+	_fire_core_mat = _flat(FIRE_HOT, 0.95)
+	_fire_glow_mat = _flat(FIRE, 0.3)
+	_bolt_core_mat = _flat(BOLT_BLUE, 0.95)
+	flame_cone = _shell(cone, _bubble(Color(1.0, 0.45, 0.1), 0.2, 0.7, 1.8, 6.0, 12.0, 0.5))
+	flame_core = _shell(cone, _bubble(Color(1.0, 0.85, 0.4), 0.25, 0.5, 1.4, 9.0, 8.0, 0.7))
+	guard_dome = _shell(_sphere_mesh, _bubble(Color(1.0, 0.5, 0.15), 0.1, 0.8, 2.0, 3.0, 14.0, 0.3))
+	rush_shell = _shell(_sphere_mesh, _bubble(Color(1.0, 0.55, 0.15), 0.18, 0.8, 1.6, 7.0, 10.0, 0.5))
+	light_orb = _shell(_sphere_mesh, _bubble(BOLT_BLUE, 0.3, 0.9, 1.4, 12.0, 8.0, 0.7))
+	_puff_t.resize(PUFFS)
+	_puff_life.resize(PUFFS)
+	_puff_size.resize(PUFFS)
+	_puff_vel.resize(PUFFS)
+	_puff_col.resize(PUFFS)
+	for k in range(PUFFS):
+		var m := _flat(FIRE, 0.0)
+		var n := _inst(_sphere_mesh, m)
+		n.visible = false
+		add_child(n)
+		_puff_nodes.append(n)
+		_puff_mats.append(m)
+		_puff_life[k] = 0.0
+		_puff_t[k] = 1.0
+
+
+# One flame particle from the pool (the oldest is reused when the pool is full).
+func puff(at: Vector3, vel: Vector3, life: float, size: float, col: Color = FIRE) -> void:
+	var k := _puff_next
+	_puff_next = (_puff_next + 1) % PUFFS
+	_puff_t[k] = 0.0
+	_puff_life[k] = life
+	_puff_size[k] = size
+	_puff_vel[k] = vel
+	_puff_col[k] = col
+	var n: MeshInstance3D = _puff_nodes[k]
+	n.position = at
+	n.scale = Vector3.ONE * size
+	n.visible = true
+
+
+func _update_puffs(dt: float) -> void:
+	for k in range(PUFFS):
+		var life: float = _puff_life[k]
+		if life <= 0.0:
+			continue
+		var t: float = _puff_t[k] + dt
+		var n: MeshInstance3D = _puff_nodes[k]
+		if t >= life:
+			_puff_life[k] = 0.0
+			n.visible = false
+			continue
+		_puff_t[k] = t
+		var u := t / life
+		var v := _puff_vel[k]
+		n.position += v * dt
+		_puff_vel[k] = v + Vector3(0.0, 3.0 * dt, 0.0)       # flames rise
+		n.scale = Vector3.ONE * (_puff_size[k] * (1.0 + 0.8 * u))
+		var c: Color = _puff_col[k].lerp(FIRE_HOT, 1.0 - u) if u < 0.4 else _puff_col[k]
+		(_puff_mats[k] as StandardMaterial3D).albedo_color = Color(c.r, c.g, c.b, 0.85 * (1.0 - u))
+
+
+func _fire_burst(at: Vector3, count: int, speed: float, size: float, col: Color = FIRE) -> void:
+	for k in range(count):
+		var a := _rng.randf() * TAU
+		var v := Vector3(cos(a), _rng.randf_range(0.1, 0.6), sin(a)) * speed * _rng.randf_range(0.5, 1.0)
+		puff(at + Vector3(0.0, 0.3, 0.0), v, _rng.randf_range(0.35, 0.6), size, col)
+
+
+func _update_fire_views(dt: float, feet: Vector3, eye: Vector3, look: Vector3) -> void:
+	# flame jet: a cone of fire from your hands plus a few pooled puffs
+	var flaming: bool = sim.flaming
+	flame_cone.visible = flaming
+	flame_core.visible = flaming
+	if flaming:
+		var jlen := C.FLAME_RANGE
+		var jspread := jlen * tan(acos(C.FLAME_CONE_COS)) * 0.55
+		var japex := eye + look * 0.8 + Vector3(0.0, -0.35, 0.0)
+		var jq := Quaternion(Vector3.UP, -look)
+		var jfl := 1.0 + 0.06 * sin(_time * 41.0)
+		flame_cone.position = japex + look * (jlen * 0.5)
+		flame_cone.quaternion = jq
+		flame_cone.scale = Vector3(jspread * jfl, jlen, jspread * jfl)
+		flame_core.position = japex + look * (jlen * 0.5)
+		flame_core.quaternion = jq
+		flame_core.scale = Vector3(jspread * 0.4, jlen * 0.92, jspread * 0.4)
+		_flame_t -= dt
+		if _flame_t <= 0.0:
+			_flame_t = 0.045
+			puff(japex + look * 0.5, look * 11.0 + Vector3(_rng.randf_range(-1.0, 1.0), _rng.randf_range(-0.5, 1.0), _rng.randf_range(-1.0, 1.0)), 0.4, 0.34, FIRE)
+	# the ring's guard: a fiery dome while it lasts
+	var guarding: bool = sim.guard_t > 0.0
+	guard_dome.visible = guarding
+	if guarding:
+		guard_dome.position = feet + Vector3(0.0, 1.0, 0.0)
+		var gk: float = clampf(sim.guard_t / C.RING_GUARD_TIME, 0.0, 1.0)
+		guard_dome.scale = Vector3.ONE * C.RING_GUARD_RADIUS * (0.9 + 0.1 * sin(_time * 12.0)) * (0.6 + 0.4 * minf(1.0, gk * 3.0))
+		guard_dome.rotate_y(dt * 3.0)
+	# dragon rush: a fireball around you and a trail of flames
+	var rushing: bool = sim.rush_t > 0.0
+	rush_shell.visible = rushing
+	if rushing:
+		rush_shell.position = feet + Vector3(0.0, 1.0, 0.0)
+		rush_shell.scale = Vector3.ONE * (1.7 + 0.12 * sin(_time * 30.0))
+		rush_shell.rotate_y(dt * 8.0)
+		_rush_t -= dt
+		if _rush_t <= 0.0:
+			_rush_t = 0.03
+			var back: Vector3 = -sim.rush_dir
+			for q in range(2):
+				puff(feet + Vector3(0.0, 1.0, 0.0) + back * 0.8 + Vector3(_rng.randf_range(-0.5, 0.5), _rng.randf_range(-0.5, 0.5), _rng.randf_range(-0.5, 0.5)),
+						back * 5.0 + Vector3(_rng.randf_range(-1.5, 1.5), _rng.randf_range(-1.0, 1.0), _rng.randf_range(-1.5, 1.5)), 0.5, 0.55, FIRE)
+	# lightning charge: a crackling orb in front of you that grows over the two seconds
+	var charging_l: bool = sim.light_t >= 0.0
+	light_orb.visible = charging_l
+	if charging_l:
+		var lk: float = clampf(sim.light_t / C.LIGHT_CHARGE, 0.0, 1.0)
+		light_orb.position = eye + look * 1.1 + Vector3(0.0, -0.25, 0.0)
+		light_orb.scale = Vector3.ONE * (0.08 + 0.3 * lk) * (1.0 + 0.2 * sin(_time * 70.0))
+		light_orb.rotate_y(dt * 14.0)
+		_spark_t -= dt
+		if _spark_t <= 0.0:
+			_spark_t = 0.05
+			var sa := _rng.randf() * TAU
+			puff(feet + Vector3(cos(sa) * 1.6, _rng.randf_range(0.3, 2.0), sin(sa) * 1.6), Vector3(-cos(sa), 0.0, -sin(sa)) * 4.0, 0.35, 0.12 + 0.1 * lk, BOLT_BLUE)
+	_update_puffs(dt)
+
+
+# A jagged bolt from a to b: a handful of short bright beams (lightning is rare, so building these is fine).
+func lightning_bolt(a: Vector3, b: Vector3, hit: bool) -> void:
+	var segs := 9
+	var dir := b - a
+	var prev := a
+	var side := dir.cross(Vector3.UP)
+	side = side.normalized() if side.length() > 0.01 else Vector3.RIGHT
+	var up := side.cross(dir.normalized())
+	for k in range(1, segs + 1):
+		var t := float(k) / float(segs)
+		var p := a + dir * t
+		if k < segs:
+			p += side * _rng.randf_range(-1.0, 1.0) * 1.3 + up * _rng.randf_range(-1.0, 1.0) * 1.3
+		beam(prev, p, 0.07, 0.3, BOLT_BLUE, 0.95)
+		beam(prev, p, 0.2, 0.3, Color(0.5, 0.7, 1.0), 0.35)
+		prev = p
+	ring(b, Vector3.UP, 3.0 if hit else 1.5, 0.35, 0.0, BOLT_BLUE, 0.3, Vector3.INF, 0.9)
+	_fire_burst(b, 10, 8.0, 0.25, BOLT_BLUE)
 
 
 # --- projectiles
@@ -1312,6 +1734,25 @@ func _make_proj_node(p) -> Node3D:
 			streak.scale = Vector3(0.7, 0.2, 4.5)
 			streak.position = Vector3(0.0, 0.0, 3.4)
 			n.add_child(streak)
+		"fpunch":                                          # a quick fireball (shared materials)
+			var fc := _inst(_sphere_mesh, _fire_core_mat)
+			fc.scale = Vector3.ONE * 0.24
+			n.add_child(fc)
+			var fgl := _inst(_sphere_mesh, _fire_glow_mat)
+			fgl.scale = Vector3(0.6, 0.6, 0.9)
+			n.add_child(fgl)
+		"farc":                                            # a crescent of flame
+			n.add_child(_inst(_crescent_mesh, _fire_core_mat))
+			var fglow := _inst(_crescent_mesh, _fire_glow_mat)
+			fglow.scale = Vector3(1.3, 1.3, 1.0)
+			n.add_child(fglow)
+		"cbeam":                                           # a long white-hot streak
+			var cb2 := _inst(_sphere_mesh, _fire_core_mat)
+			cb2.scale = Vector3(0.2, 0.2, 2.2)
+			n.add_child(cb2)
+			var cg2 := _inst(_sphere_mesh, _fire_glow_mat)
+			cg2.scale = Vector3(0.5, 0.5, 3.2)
+			n.add_child(cg2)
 		"wbullet":                                        # a small fast bead of water
 			var bead := _inst(_sphere_mesh, _flat(Color(0.35, 0.7, 1.0), 0.95))
 			bead.scale = Vector3(0.22, 0.22, 0.7)
@@ -1328,12 +1769,9 @@ func _make_proj_node(p) -> Node3D:
 			sl.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			n.add_child(sl)
 		"rock", "boulder":
-			var rm := StandardMaterial3D.new()
-			rm.albedo_color = Color(0.45, 0.36, 0.27)
-			rm.roughness = 1.0
 			var rock := MeshInstance3D.new()
-			rock.mesh = _sphere_mesh
-			rock.material_override = rm
+			rock.mesh = _lump_mesh
+			rock.material_override = _proj_rock_mat
 			rock.scale = Vector3(0.55, 0.42, 0.62) * (2.3 if String(p.kind) == "boulder" else 1.0)
 			rock.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			n.add_child(rock)
@@ -1412,10 +1850,8 @@ func _build_bot_view(b = null) -> Dictionary:
 	sh.get_parent().remove_child(sh)
 	root.add_child(sh)
 	var ice_block := MeshInstance3D.new()                # the block of ice a frozen bot is trapped in
-	var ice_mesh := BoxMesh.new()
-	ice_mesh.size = Vector3(1.25, 2.15, 1.25)
-	ice_block.mesh = ice_mesh
-	ice_block.material_override = _flat(Color(0.7, 0.88, 1.0), 0.5)
+	ice_block.mesh = _ice_block_mesh
+	ice_block.material_override = _ice_block_mat
 	ice_block.position = Vector3(0.0, 1.05, 0.0)
 	ice_block.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	ice_block.visible = false
@@ -1447,8 +1883,10 @@ func update_bots() -> void:
 			bstance = "breath"
 		elif b.suck_t > 0.0:
 			bstance = "suction"
-		elif b.jet_t > 0.0 or b.octo_t > 0.0:
+		elif b.jet_t > 0.0 or b.octo_t > 0.0 or b.flame_t > 0.0:
 			bstance = "breath"
+		elif b.light_t > 0.0:
+			bstance = "charge"
 		elif b.scoot_t > 0.0:
 			bstance = "scooter" if b.nation == "air" else "skate"
 		var frozen: bool = b.frozen_t > 0.0
@@ -1468,14 +1906,15 @@ func beam(a: Vector3, b: Vector3, width: float, dur: float, color := WATER, peak
 	var seg := a.distance_to(b)
 	if seg < 0.05 or _beams.size() > 160:
 		return
-	var cyl := CylinderMesh.new()
-	cyl.top_radius = 1.0
-	cyl.bottom_radius = 1.0
-	cyl.height = 1.0
-	cyl.radial_segments = 8
-	cyl.rings = 1
+	if _beam_mesh == null:                                # one shared unit cylinder for every beam
+		_beam_mesh = CylinderMesh.new()
+		_beam_mesh.top_radius = 1.0
+		_beam_mesh.bottom_radius = 1.0
+		_beam_mesh.height = 1.0
+		_beam_mesh.radial_segments = 8
+		_beam_mesh.rings = 1
 	var mat := _flat(color, peak)
-	var mi := _inst(cyl, mat)
+	var mi := _inst(_beam_mesh, mat)
 	add_child(mi)
 	mi.position = (a + b) * 0.5
 	mi.quaternion = Quaternion(Vector3.UP, (b - a).normalized())
@@ -1730,7 +2169,7 @@ func _update_books(dt: float) -> void:
 
 func _update_player_rigs(dt: float, feet: Vector3) -> void:
 	var el: String = sim.element
-	for nat in ["air", "earth", "water"]:
+	for nat in ["air", "earth", "water", "fire"]:
 		body_rigs[nat].visible = nat == el
 		arm_rigs[nat].visible = nat == el
 	var br = body_rigs[el]
@@ -1757,8 +2196,12 @@ func _update_player_rigs(dt: float, feet: Vector3) -> void:
 		arm_stance = "swim"
 	elif sim.gliding:
 		arm_stance = "glide"
-	elif sim.breath_t > 0.0 or sim.jet_on:
+	elif sim.breath_t > 0.0 or sim.jet_on or sim.flaming:
 		arm_stance = "breath"
+	elif sim.light_t >= 0.0:
+		arm_stance = "charge"
+	elif sim.rush_t > 0.0:
+		arm_stance = "hold"
 	elif sim.octo_t > 0.0:
 		arm_stance = "hold"
 	elif sim.gathering:

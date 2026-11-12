@@ -2,8 +2,8 @@ extends RefCounted
 ## What was picked in the menus, read by the game scene when it starts. Static, so it survives the scene change.
 ## The defaults match how the game used to open: an airbender among fighting dummies.
 
-const NATIONS := ["air", "earth", "water"]
-const NATION_NAMES := {"air": "AIR NOMADS", "earth": "EARTH KINGDOM", "water": "WATER TRIBE"}
+const NATIONS := ["air", "earth", "water", "fire"]
+const NATION_NAMES := {"air": "AIR NOMADS", "earth": "EARTH KINGDOM", "water": "WATER TRIBE", "fire": "FIRE NATION"}
 
 static var mode := "bots"            # "duel" (one enemy bender) or "bots" (training bots)
 static var player_nation := "air"
