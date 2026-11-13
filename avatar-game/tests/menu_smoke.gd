@@ -115,7 +115,7 @@ func _initialize() -> void:
 	ok(screen_has_text("EARTH WALL"), "picking Earth Kingdom shows the earth moves")
 	press("FIRE NATION")
 	await settle()
-	ok(screen_has_text("FLAME JET") and screen_has_text("FIRE RING") and screen_has_text("LIGHTNING") and not find_button("CONFIRM").disabled, "picking Fire Nation shows the fire moves")
+	ok(screen_has_text("FLAME BURST") and screen_has_text("FIRE RING") and screen_has_text("LIGHTNING") and not find_button("CONFIRM").disabled, "picking Fire Nation shows the fire moves")
 	press("WATER TRIBE")
 	await settle()
 	press("CONFIRM")

@@ -13,10 +13,19 @@ const WATER := Color(0.45, 0.78, 1.0)
 const ICE := Color(0.82, 0.94, 1.0)
 const FIRE := Color(1.0, 0.55, 0.15)
 const FIRE_HOT := Color(1.0, 0.85, 0.4)
+const POOLED := {"slice": 1, "punch": 1, "shard": 1, "disc": 1, "fpunch": 1, "fbig": 1, "fpellet": 1, "wbullet": 1, "rock": 1, "boulder": 1}
+# colour of the little sparks / dust a projectile throws when it hits (all nations)
+const SPARK := {"punch": Color(0.92, 0.98, 1.0), "slice": Color(0.92, 0.98, 1.0), "rock": Color(0.62, 0.47, 0.30), "boulder": Color(0.62, 0.47, 0.30),
+		"slab": Color(0.62, 0.47, 0.30), "wbullet": Color(0.55, 0.82, 1.0), "shard": Color(0.85, 0.96, 1.0), "disc": Color(0.85, 0.96, 1.0),
+		"bolt": Color(1.0, 0.55, 0.3)}
+# a short glow where a move leaves the hand (consistent for every nation): event type -> colour
+const CAST_GLOW := {"punch": Color(0.92, 0.98, 1.0), "slice": Color(0.92, 0.98, 1.0), "blast": Color(0.92, 0.98, 1.0), "rock": Color(0.75, 0.58, 0.36),
+		"boulder": Color(0.75, 0.58, 0.36), "barrage": Color(0.75, 0.58, 0.36), "wave": Color(0.75, 0.58, 0.36), "whip": Color(0.5, 0.8, 1.0),
+		"shards": Color(0.85, 0.96, 1.0), "bullet": Color(0.5, 0.8, 1.0), "fkick": Color(1.0, 0.7, 0.3)}
 const BOLT_BLUE := Color(0.75, 0.88, 1.0)
 const MAX_DEBRIS := 240
 const MAX_EFFECTS := 140          # live rings / domes / labels at once: more are simply not spawned (keeps nodes and draw calls flat)
-const PUFFS := 56                 # the pooled flame particles (flame jet, rush trail, ring burst, bot flames, sparks)
+const PUFFS := 80                 # the pooled flame particles (fireball wind-up, rush trail, ring burst, bot flames, sparks)
 const OCTO_BEADS := 40
 const OCTO_LEN := 15.0           # how far the arms are drawn (the hit reach is C.OCTO_REACH)
 const WHIP_BEADS := 22
@@ -165,17 +174,25 @@ var _puff_life := PackedFloat32Array()
 var _puff_size := PackedFloat32Array()
 var _puff_vel := PackedVector3Array()
 var _puff_col := PackedColorArray()
+var _puff_warm := PackedByteArray()      # 1 = the puff glows towards yellow when young (flames); 0 = keeps its own colour (dust, wisps, sparks)
+var _proj_pool := {}                     # kind -> hidden projectile nodes ready to reuse (nothing is freed or rebuilt while you fight)
+var _proj_kind := {}                     # projectile id -> kind
+var _proj_stamp := {}                    # projectile id -> the frame it was last seen
+var _stamp := 0
+var _ptrail_last := 0.0
+var _burn_t := 0.0
+var _burn_pt := 0.0
+var _fire_core_hot_mat: StandardMaterial3D
+var _fire_glow_hot_mat: StandardMaterial3D
 var _puff_next := 0
 var _puff_live := 0
-var flame_cone: MeshInstance3D
-var flame_core: MeshInstance3D
 var guard_dome: MeshInstance3D
 var rush_shell: MeshInstance3D
 var light_orb: MeshInstance3D
 var _fire_core_mat: StandardMaterial3D
 var _fire_glow_mat: StandardMaterial3D
 var _bolt_core_mat: StandardMaterial3D
-var _flame_t := 0.0
+var _fcharge_t := 0.0
 var _rush_t := 0.0
 var _spark_t := 0.0
 var _beam_mesh: CylinderMesh
@@ -324,7 +341,7 @@ func setup(w, s, c: Camera3D) -> void:
 			wbeads.append(_shell(_sphere_mesh, whip_mat))
 		whip_chains.append(wbeads)
 	_build_shard()
-	_build_fire_fx(cone)
+	_build_fire_fx()
 	_ice_warm = _shell(_ice_block_mesh, _ice_block_mat)
 
 	for nat in ["air", "earth", "water", "fire"]:
@@ -667,17 +684,21 @@ func _rig_event(ev: Dictionary) -> void:
 			ar.trigger("gust", 0.3)
 		"clap":
 			ar.trigger("slam", 0.8)
-		"whip", "fwhip":
+		"whip":
 			ar.trigger("slash", 0.28)
 		"fpunch":
 			ar.trigger("punch", 0.2, 1 if _punch_side else -1)
 			_punch_side = not _punch_side
-		"farcs", "combust_cast":
+		"fburst", "fbig":
 			ar.trigger("thrust", 0.4)
 		"fring", "rush_start", "lightning_fire":
 			ar.trigger("slam", 0.6)
-		"fdash":
+		"adash":
 			ar.trigger("gust", 0.3)
+		"fkick":
+			ar.trigger("gust", 0.3)
+		"fkick_hit":
+			br.trigger("kick", 0.4)
 		"shards", "disc_throw":
 			ar.trigger("thrust", 0.4)
 		"ice_wall", "heal":
@@ -711,7 +732,25 @@ var _punch_side := true
 
 func on_sim_event(ev: Dictionary, feet: Vector3) -> void:
 	_rig_event(ev)
+	var glow = CAST_GLOW.get(String(ev["type"]))
+	if glow != null and ev.has("origin") and ev.has("dir"):           # every nation's moves leave the hand with a glow
+		var gd: Vector3 = ev["dir"]
+		puff(Vector3(ev["origin"]) + gd * 0.9 + Vector3(0.0, -0.2, 0.0), gd * 2.0, 0.22, 0.32, glow, false)
 	match String(ev["type"]):
+		"combo":
+			floating_text(feet + Vector3(0, 2.7, 0), String(ev["text"]), FIRE_HOT)
+			ring(feet + Vector3(0, 1.0, 0) + sim.look_dir() * 1.2, sim.look_dir(), 2.0, 0.35, 0.0, FIRE_HOT, 0.5)
+			_fire_burst(feet + sim.look_dir() * 1.5 + Vector3(0, 0.8, 0), 6, 6.0, 0.25, FIRE_HOT)
+		"combo_ready":
+			ring(feet + Vector3(0, 1.0, 0), Vector3.UP, 1.4, 0.3, 0.0, FIRE_HOT, 0.3)
+		"momentum":
+			floating_text(feet + Vector3(0, 2.5, 0), "MOMENTUM", Color(0.6, 1.0, 0.7))
+			ring(feet + Vector3(0, 0.15, 0), Vector3.UP, 2.4, 0.4, 0.0, Color(0.6, 1.0, 0.7), 0.4)
+		"burn_on":
+			floating_text(feet + Vector3(0, 2.5, 0), "BURNING", Color(1.0, 0.5, 0.2))
+		"burn_out":
+			floating_text(feet + Vector3(0, 2.4, 0), "PUT OUT", Color(0.7, 0.9, 1.0))
+			_fire_burst(feet, 4, 2.0, 0.25, Color(0.85, 0.9, 0.95), false)
 		"gust":
 			ring(feet + Vector3(0, 0.15, 0), Vector3.UP, 3.2, 0.45)
 			ring(feet + Vector3(0, 0.55, 0), Vector3.UP, 2.2, 0.40, 0.06)
@@ -751,24 +790,40 @@ func on_sim_event(ev: Dictionary, feet: Vector3) -> void:
 			pass
 		"fpunch":
 			var fpo: Vector3 = ev["origin"]
-			puff(fpo + Vector3(ev["dir"]) * 1.0, Vector3(ev["dir"]) * 4.0, 0.25, 0.3, FIRE_HOT)
-		"fwhip":
-			var fwo: Vector3 = ev["origin"]
-			var fwd: Vector3 = ev["dir"]
-			var fwr := fwd.cross(Vector3.UP)
-			fwr = fwr.normalized() if fwr.length() > 0.01 else Vector3.RIGHT
-			var fws := 1.0 if bool(ev["flip"]) else -1.0
-			var fwp := fwo + fwd * 0.8 + Vector3(0.0, -0.3, 0.0) + fwr * 0.3 * fws
-			for k in range(4):
-				var fwn := fwp + fwd * (C.FWHIP_REACH * float(k + 1) / 4.0) + fwr * sin(float(k + 1) * 1.7) * 0.5 * fws
-				beam(fwp, fwn, 0.12 - 0.02 * float(k), 0.22, FIRE, 0.9)
-				fwp = fwn
-		"farcs":
-			var fao: Vector3 = ev["origin"]
-			_fire_burst(fao + Vector3(ev["dir"]) * 1.2, 5, 5.0, 0.3)
-		"combust_cast":
-			var fco: Vector3 = ev["origin"]
-			ring(fco + Vector3(ev["dir"]) * 1.2, ev["dir"], 1.0, 0.25, 0.0, FIRE_HOT, 0.2)
+			puff(fpo + Vector3(ev["dir"]) * 1.0, Vector3(ev["dir"]) * 4.0, 0.25, 0.45 if sim.is_hot() else 0.3, FIRE_HOT)
+		"fbig_charge":
+			pass
+		"fbig":
+			var fbo: Vector3 = ev["origin"]
+			ring(fbo + Vector3(ev["dir"]) * 1.2, ev["dir"], 1.2, 0.3, 0.0, FIRE_HOT, 0.25)
+			_fire_burst(fbo + Vector3(ev["dir"]) * 1.2, 4, 4.0, 0.4)
+		"fburst":
+			var fso: Vector3 = ev["origin"]
+			var fsd: Vector3 = ev["dir"]
+			for k in range(10 if sim.is_hot() else 6):
+				puff(fso + fsd * 1.0 + Vector3(0.0, -0.2, 0.0), fsd * _rng.randf_range(6.0, 14.0) + Vector3(_rng.randf_range(-2.0, 2.0), _rng.randf_range(-1.0, 1.5), _rng.randf_range(-2.0, 2.0)), 0.3, 0.3, FIRE)
+		"fbig_burst":
+			var fbp: Vector3 = ev["pos"]
+			var fbr: float = ev["radius"]
+			dome(fbp, fbr, 0.35, Color(1.0, 0.6, 0.2))
+			ring(fbp + Vector3(0, 0.2, 0), Vector3.UP, fbr * 1.2, 0.4, 0.0, FIRE_HOT, 0.4, Vector3.INF, 0.9)
+			_fire_burst(fbp, 10, 8.0, 0.45)
+		"fkick":
+			var fkp: Vector3 = ev["pos"]
+			var fkd: Vector3 = ev["dir"]
+			ring(fkp + Vector3(0, 0.2, 0), Vector3.UP, 1.8, 0.3, 0.0, FIRE, 0.4)
+			for k in range(5):
+				puff(fkp + Vector3(0.0, 0.5, 0.0) + fkd * float(k) * 1.0, Vector3(_rng.randf_range(-1.0, 1.0), _rng.randf_range(0.0, 1.0), _rng.randf_range(-1.0, 1.0)), 0.4, 0.45, FIRE)
+		"fkick_hit":
+			var fhp: Vector3 = ev["pos"]
+			var fhd: Vector3 = ev["dir"]
+			ring(fhp + fhd * 1.4, fhd, 2.4, 0.3, 0.0, FIRE_HOT, 0.5)
+			_fire_burst(fhp + fhd * 1.6, 8, 7.0, 0.4)
+		"adash":
+			var adp: Vector3 = ev["pos"]
+			var adr: Vector3 = ev["dir"]
+			ring(adp + Vector3(0, 1.0, 0) + adr * 1.0, adr, 1.6, 0.3, 0.0, AIR, 0.5)
+			ring(adp + Vector3(0, 1.0, 0) + adr * 3.5, adr, 1.2, 0.3, 0.05, AIR, 0.4)
 		"fring":
 			var frp: Vector3 = ev["pos"]
 			var frr: float = ev["radius"]
@@ -776,12 +831,6 @@ func on_sim_event(ev: Dictionary, feet: Vector3) -> void:
 			ring(frp + Vector3(0, 0.15, 0), Vector3.UP, frr * 1.1, 0.45, 0.0, FIRE, 0.6, Vector3.INF, 0.9)
 			ring(frp + Vector3(0, 1.0, 0), Vector3.UP, frr, 0.5, 0.06, FIRE_HOT, 0.5, Vector3.INF, 0.7)
 			_fire_burst(frp, 22, 12.0, 0.45)
-		"fdash":
-			var fdp: Vector3 = ev["pos"]
-			var fdd: Vector3 = ev["dir"]
-			ring(fdp + Vector3(0, 0.2, 0), Vector3.UP, 2.2, 0.35, 0.0, FIRE, 0.4)
-			for k in range(6):
-				puff(fdp + Vector3(0.0, 0.6, 0.0) + fdd * float(k) * 1.6, Vector3(_rng.randf_range(-1.0, 1.0), _rng.randf_range(0.0, 1.0), _rng.randf_range(-1.0, 1.0)), 0.45, 0.5, FIRE)
 		"overheat":
 			var fop: Vector3 = ev["pos"]
 			ring(fop + Vector3(0, 1.0, 0), Vector3.UP, 2.4, 0.5, 0.0, Color(1.0, 0.3, 0.15), 0.5)
@@ -961,6 +1010,16 @@ func on_sim_event(ev: Dictionary, feet: Vector3) -> void:
 
 func on_world_event(ev: Dictionary) -> void:
 	match String(ev["type"]):
+		"burn_on":
+			floating_text(ev["pos"], "BURNING", Color(1.0, 0.5, 0.2))
+		"burn_out":
+			_fire_burst(ev["pos"], 4, 2.0, 0.25, Color(0.85, 0.9, 0.95), false)
+		"lightning_clash":
+			floating_text(Vector3(ev["pos"]) + Vector3(0, 2.0, 0), "BOLTS CLASH!", BOLT_BLUE)
+			ring(Vector3(ev["pos"]) + Vector3(0, 0.5, 0), Vector3.UP, 3.5, C.LIGHT_DUEL_WINDOW, 0.0, BOLT_BLUE, 0.4, Vector3.INF, 0.9)
+		"lightning_redirect":
+			floating_text(Vector3(ev["pos"]) + Vector3(0, 2.0, 0), "REDIRECTED!", Color(1.0, 0.9, 0.5))
+			_fire_burst(ev["pos"], 10, 8.0, 0.3, BOLT_BLUE)
 		"bot_hit":
 			var dmg: float = ev["damage"]
 			var col := Color(1.0, 0.95, 0.6) if dmg >= 30.0 else Color(1, 1, 1)
@@ -1054,6 +1113,9 @@ func on_world_event(ev: Dictionary) -> void:
 			debris(ev["pos"], 4, 5.0, 0.1, 0.5, 1.0)
 		"proj_hit":
 			var kind: String = ev["kind"]
+			var spark = SPARK.get(kind)                         # little sparks / dust on every hit, in the move's own colour
+			if spark != null:
+				_fire_burst(ev["pos"], 2, 3.5, 0.13, spark, false)
 			if kind == "shard":
 				debris(ev["pos"], 5, 5.0, 0.1, 0.4, 1.0, true)
 			elif kind == "disc":
@@ -1061,7 +1123,7 @@ func on_world_event(ev: Dictionary) -> void:
 			elif kind == "wbullet":
 				ring(ev["pos"], Vector3.UP, 1.0, 0.2, 0.0, WATER, 0.1, Vector3.INF, 0.6)
 				debris(ev["pos"], 3, 4.0, 0.08, 0.3, 1.0, true)
-			if kind == "fpunch" or kind == "farc":
+			if kind == "fpunch" or kind == "fpellet" or kind == "fbig":
 				_fire_burst(ev["pos"], 3, 4.0, 0.3)
 				return
 			var col2 := BOLT if kind == "bolt" else (EARTH if (kind == "rock" or kind == "boulder") else AIR)
@@ -1101,10 +1163,6 @@ func on_world_event(ev: Dictionary) -> void:
 			debris(tp + Vector3(0, 0.3, 0), 14, 6.0, 0.14, float(ev["radius"]) * 0.4, 1.0, true)
 		"bot_jet":
 			ring(ev["pos"], ev["dir"], 1.4, 0.4, 0.0, WATER, 0.6, ev["pos"] + ev["dir"] * 15.0, 0.5)
-		"bot_flame":
-			var bfd: Vector3 = ev["dir"]
-			for k in range(2):
-				puff(ev["pos"], bfd * 10.0 + Vector3(_rng.randf_range(-1.0, 1.0), _rng.randf_range(-0.3, 0.8), _rng.randf_range(-1.0, 1.0)), 0.4, 0.34, FIRE)
 		"bot_overheat":
 			floating_text(Vector3(ev["pos"]) + Vector3(0, 1.4, 0), "OVERHEATED", Color(1.0, 0.4, 0.2))
 			_fire_burst(ev["pos"], 6, 4.0, 0.3)
@@ -1122,23 +1180,17 @@ func on_world_event(ev: Dictionary) -> void:
 			_fire_burst(wrp, 14, 10.0, 0.45)
 		"ring_block":
 			_fire_burst(ev["pos"], 3, 3.0, 0.25, FIRE_HOT)
-		"combust_arm":
-			var cap: Vector3 = ev["pos"]
-			ring(cap + Vector3(0, 0.15, 0), Vector3.UP, float(ev["radius"]), float(ev["delay"]), 0.0, FIRE, 0.4, Vector3.INF, 0.9)
-			puff(cap + Vector3(0, 0.5, 0), Vector3(0.0, 1.0, 0.0), float(ev["delay"]), 0.5, FIRE_HOT)
-		"combust":
-			var cbp: Vector3 = ev["pos"]
-			var cbr: float = ev["radius"]
-			dome(cbp, cbr, 0.45, Color(1.0, 0.6, 0.2))
-			ring(cbp + Vector3(0, 0.2, 0), Vector3.UP, cbr * 1.2, 0.5, 0.0, FIRE_HOT, 0.4, Vector3.INF, 0.9)
-			_fire_burst(cbp, 20, 12.0, 0.55)
-			debris(cbp, 10, 9.0, 0.25, 1.5)
+		"bot_kick":
+			var bkp: Vector3 = ev["pos"]
+			var bkd: Vector3 = ev["dir"]
+			ring(bkp + bkd * 1.4, bkd, 2.4, 0.3, 0.0, FIRE_HOT, 0.5)
+			_fire_burst(bkp + bkd * 1.6, 6, 6.0, 0.4)
 		"bot_whip":
 			var wf: Vector3 = ev["from"]
 			var wt: Vector3 = ev["to"]
 			var wmid := (wf + wt) * 0.5 + Vector3(0.0, 0.5, 0.0)
 			var thick := 0.16 if bool(ev["big"]) else 0.1
-			var wcol := FIRE if bool(ev.get("fire", false)) else WATER
+			var wcol := WATER
 			beam(wf, wmid, thick, 0.25, wcol, 0.9)
 			beam(wmid, wt, thick * 0.7, 0.25, wcol, 0.9)
 			ring(wt, Vector3.UP, 1.4, 0.3, 0.05, wcol, 0.3)
@@ -1524,19 +1576,20 @@ func _warm_up() -> void:
 	var fwd: Vector3 = -cam.global_transform.basis.z
 	var at: Vector3 = cam.global_position + fwd * 1.5
 	var shells: Array = [scooter_shell, scooter_ball, shield_node, charge_orb, aura, breath_cone, breath_core, jet_cone, jet_core,
-			flame_cone, flame_core, guard_dome, rush_shell, light_orb, _ice_warm]
+			guard_dome, rush_shell, light_orb, _ice_warm]
 	if _warm == 3:
 		debris(at, 1, 0.0, 0.001, 0.0, 0.0, true)
 		debris(at, 1, 0.0, 0.001, 0.0, 0.0, false)
 		puff(at, Vector3.ZERO, 0.06, 0.001, BOLT_BLUE)
 		puff(at, Vector3.ZERO, 0.06, 0.001, FIRE)
+		puff(at, Vector3.ZERO, 0.06, 0.001, DUST, false)
 		beam(at, at + Vector3(0.0, 0.01, 0.0), 0.001, 0.06, FIRE, 0.02)
 		beam(at, at + Vector3(0.0, 0.01, 0.0), 0.001, 0.06, BOLT_BLUE, 0.02)
 		beam(at, at + Vector3(0.0, 0.01, 0.0), 0.001, 0.06, WATER, 0.02)
 		ring(at, Vector3.UP, 0.001, 0.06, 0.0, FIRE, 0.001, Vector3.INF, 0.02)
 		dome(at, 0.001, 0.06, Color(1.0, 0.55, 0.15))
 		var behind: Vector3 = cam.global_position - fwd * 3.0
-		for t in ["OVERHEATED", "LIGHTNING", "LIGHTNING!", "DRAGON RUSH", "TOO WET", "FROZEN", "FREEZE ON", "THAW", "0123456789"]:
+		for t in ["OVERHEATED", "LIGHTNING", "LIGHTNING!", "DRAGON RUSH", "TOO WET", "FROZEN", "FREEZE ON", "THAW", "0123456789", "BURNING", "PUT OUT", "MOMENTUM", "BOLTS CLASH!", "REDIRECTED!", "KICK + BURST!", "DASH SLICE!", "QUAKE BOULDER!", "FROST LASH!"]:
 			floating_text(behind, t, FIRE)
 	for s in shells:
 		var m: MeshInstance3D = s
@@ -1550,14 +1603,12 @@ func _warm_up() -> void:
 
 
 # ------------------------------------------------------------------ firebending visuals
-# Everything below reuses fixed nodes and shared materials: a flame jet, a rush or a ring costs no allocations per frame.
+# Everything below reuses fixed nodes and shared materials: a fireball, a rush or a ring costs no allocations per frame.
 
-func _build_fire_fx(cone: Mesh) -> void:
+func _build_fire_fx() -> void:
 	_fire_core_mat = _flat(FIRE_HOT, 0.95)
 	_fire_glow_mat = _flat(FIRE, 0.3)
 	_bolt_core_mat = _flat(BOLT_BLUE, 0.95)
-	flame_cone = _shell(cone, _bubble(Color(1.0, 0.45, 0.1), 0.2, 0.7, 1.8, 6.0, 12.0, 0.5))
-	flame_core = _shell(cone, _bubble(Color(1.0, 0.85, 0.4), 0.25, 0.5, 1.4, 9.0, 8.0, 0.7))
 	guard_dome = _shell(_sphere_mesh, _bubble(Color(1.0, 0.5, 0.15), 0.1, 0.8, 2.0, 3.0, 14.0, 0.3))
 	rush_shell = _shell(_sphere_mesh, _bubble(Color(1.0, 0.55, 0.15), 0.18, 0.8, 1.6, 7.0, 10.0, 0.5))
 	light_orb = _shell(_sphere_mesh, _bubble(BOLT_BLUE, 0.3, 0.9, 1.4, 12.0, 8.0, 0.7))
@@ -1566,6 +1617,9 @@ func _build_fire_fx(cone: Mesh) -> void:
 	_puff_size.resize(PUFFS)
 	_puff_vel.resize(PUFFS)
 	_puff_col.resize(PUFFS)
+	_puff_warm.resize(PUFFS)
+	_fire_core_hot_mat = _flat(Color(1.0, 0.97, 0.75), 1.0)
+	_fire_glow_hot_mat = _flat(Color(1.0, 0.75, 0.25), 0.45)
 	for k in range(PUFFS):
 		var m := _flat(FIRE, 0.0)
 		var n := _inst(_sphere_mesh, m)
@@ -1578,7 +1632,7 @@ func _build_fire_fx(cone: Mesh) -> void:
 
 
 # One flame particle from the pool (the oldest is reused when the pool is full).
-func puff(at: Vector3, vel: Vector3, life: float, size: float, col: Color = FIRE) -> void:
+func puff(at: Vector3, vel: Vector3, life: float, size: float, col: Color = FIRE, warm := true) -> void:
 	var k := _puff_next
 	_puff_next = (_puff_next + 1) % PUFFS
 	_puff_t[k] = 0.0
@@ -1586,6 +1640,7 @@ func puff(at: Vector3, vel: Vector3, life: float, size: float, col: Color = FIRE
 	_puff_size[k] = size
 	_puff_vel[k] = vel
 	_puff_col[k] = col
+	_puff_warm[k] = 1 if warm else 0
 	var n: MeshInstance3D = _puff_nodes[k]
 	n.position = at
 	n.scale = Vector3.ONE * size
@@ -1609,38 +1664,25 @@ func _update_puffs(dt: float) -> void:
 		n.position += v * dt
 		_puff_vel[k] = v + Vector3(0.0, 3.0 * dt, 0.0)       # flames rise
 		n.scale = Vector3.ONE * (_puff_size[k] * (1.0 + 0.8 * u))
-		var c: Color = _puff_col[k].lerp(FIRE_HOT, 1.0 - u) if u < 0.4 else _puff_col[k]
+		var c: Color = _puff_col[k].lerp(FIRE_HOT, 1.0 - u) if (u < 0.4 and _puff_warm[k] == 1) else _puff_col[k]
 		(_puff_mats[k] as StandardMaterial3D).albedo_color = Color(c.r, c.g, c.b, 0.85 * (1.0 - u))
 
 
-func _fire_burst(at: Vector3, count: int, speed: float, size: float, col: Color = FIRE) -> void:
+func _fire_burst(at: Vector3, count: int, speed: float, size: float, col: Color = FIRE, warm := true) -> void:
 	for k in range(count):
 		var a := _rng.randf() * TAU
 		var v := Vector3(cos(a), _rng.randf_range(0.1, 0.6), sin(a)) * speed * _rng.randf_range(0.5, 1.0)
-		puff(at + Vector3(0.0, 0.3, 0.0), v, _rng.randf_range(0.35, 0.6), size, col)
+		puff(at + Vector3(0.0, 0.3, 0.0), v, _rng.randf_range(0.35, 0.6), size, col, warm)
 
 
 func _update_fire_views(dt: float, feet: Vector3, eye: Vector3, look: Vector3) -> void:
-	# flame jet: a cone of fire from your hands plus a few pooled puffs
-	var flaming: bool = sim.flaming
-	flame_cone.visible = flaming
-	flame_core.visible = flaming
-	if flaming:
-		var jlen := C.FLAME_RANGE
-		var jspread := jlen * tan(acos(C.FLAME_CONE_COS)) * 0.55
-		var japex := eye + look * 0.8 + Vector3(0.0, -0.35, 0.0)
-		var jq := Quaternion(Vector3.UP, -look)
-		var jfl := 1.0 + 0.06 * sin(_time * 41.0)
-		flame_cone.position = japex + look * (jlen * 0.5)
-		flame_cone.quaternion = jq
-		flame_cone.scale = Vector3(jspread * jfl, jlen, jspread * jfl)
-		flame_core.position = japex + look * (jlen * 0.5)
-		flame_core.quaternion = jq
-		flame_core.scale = Vector3(jspread * 0.4, jlen * 0.92, jspread * 0.4)
-		_flame_t -= dt
-		if _flame_t <= 0.0:
-			_flame_t = 0.045
-			puff(japex + look * 0.5, look * 11.0 + Vector3(_rng.randf_range(-1.0, 1.0), _rng.randf_range(-0.5, 1.0), _rng.randf_range(-1.0, 1.0)), 0.4, 0.34, FIRE)
+	# big fireball wind-up: embers gather at your hand (pooled puffs, nothing allocated)
+	if sim.fcharging:
+		_fcharge_t -= dt
+		if _fcharge_t <= 0.0:
+			_fcharge_t = 0.05
+			var fco := eye + look * 1.0 + Vector3(0.0, -0.3, 0.0)
+			puff(fco + Vector3(_rng.randf_range(-0.5, 0.5), _rng.randf_range(-0.5, 0.5), _rng.randf_range(-0.5, 0.5)), -look * 0.5, 0.25, 0.25, FIRE)
 	# the ring's guard: a fiery dome while it lasts
 	var guarding: bool = sim.guard_t > 0.0
 	guard_dome.visible = guarding
@@ -1676,6 +1718,11 @@ func _update_fire_views(dt: float, feet: Vector3, eye: Vector3, look: Vector3) -
 			_spark_t = 0.05
 			var sa := _rng.randf() * TAU
 			puff(feet + Vector3(cos(sa) * 1.6, _rng.randf_range(0.3, 2.0), sin(sa) * 1.6), Vector3(-cos(sa), 0.0, -sin(sa)) * 4.0, 0.35, 0.12 + 0.1 * lk, BOLT_BLUE)
+	_burn_pt -= dt
+	if _burn_pt <= 0.0:
+		_burn_pt = 0.12
+		if sim.burn_t > 0.0:                                  # you are burning: flames lick up around you
+			puff(feet + Vector3(_rng.randf_range(-0.4, 0.4), _rng.randf_range(0.2, 1.4), _rng.randf_range(-0.4, 0.4)), Vector3(0.0, 1.5, 0.0), 0.4, 0.2, FIRE)
 	_update_puffs(dt)
 
 
@@ -1734,25 +1781,24 @@ func _make_proj_node(p) -> Node3D:
 			streak.scale = Vector3(0.7, 0.2, 4.5)
 			streak.position = Vector3(0.0, 0.0, 3.4)
 			n.add_child(streak)
-		"fpunch":                                          # a quick fireball (shared materials)
+		"fpunch":                                          # a small fireball (shared materials)
 			var fc := _inst(_sphere_mesh, _fire_core_mat)
-			fc.scale = Vector3.ONE * 0.24
+			fc.scale = Vector3.ONE * 0.18
 			n.add_child(fc)
 			var fgl := _inst(_sphere_mesh, _fire_glow_mat)
-			fgl.scale = Vector3(0.6, 0.6, 0.9)
+			fgl.scale = Vector3(0.45, 0.45, 0.8)
 			n.add_child(fgl)
-		"farc":                                            # a crescent of flame
-			n.add_child(_inst(_crescent_mesh, _fire_core_mat))
-			var fglow := _inst(_crescent_mesh, _fire_glow_mat)
-			fglow.scale = Vector3(1.3, 1.3, 1.0)
-			n.add_child(fglow)
-		"cbeam":                                           # a long white-hot streak
-			var cb2 := _inst(_sphere_mesh, _fire_core_mat)
-			cb2.scale = Vector3(0.2, 0.2, 2.2)
-			n.add_child(cb2)
-			var cg2 := _inst(_sphere_mesh, _fire_glow_mat)
-			cg2.scale = Vector3(0.5, 0.5, 3.2)
-			n.add_child(cg2)
+		"fbig":                                            # a big fireball
+			var bc := _inst(_sphere_mesh, _fire_core_mat)
+			bc.scale = Vector3.ONE * 0.5
+			n.add_child(bc)
+			var bg := _inst(_sphere_mesh, _fire_glow_mat)
+			bg.scale = Vector3(1.2, 1.2, 1.7)
+			n.add_child(bg)
+		"fpellet":                                         # one pellet of a flame burst: a single small mesh
+			var pc := _inst(_sphere_mesh, _fire_glow_mat)
+			pc.scale = Vector3(0.22, 0.22, 0.45)
+			n.add_child(pc)
 		"wbullet":                                        # a small fast bead of water
 			var bead := _inst(_sphere_mesh, _flat(Color(0.35, 0.7, 1.0), 0.95))
 			bead.scale = Vector3(0.22, 0.22, 0.7)
@@ -1790,33 +1836,109 @@ func _make_proj_node(p) -> Node3D:
 	return n
 
 
+# A projectile node comes from the pool of its kind when there is one (the nodes of a fireball volley or a flame burst are
+# reused, not freed and rebuilt). Pooled nodes are hidden, never drawn.
+func _acquire_proj(p) -> Node3D:
+	var kind: String = p.kind
+	var n: Node3D = null
+	if POOLED.has(kind):
+		var pool: Array = _proj_pool.get(kind, [])
+		if not pool.is_empty():
+			n = pool.pop_back()
+			n.visible = true
+			n.scale = Vector3.ONE
+	if n == null:
+		n = _make_proj_node(p)
+		add_child(n)
+	if kind == "fpunch" or kind == "fbig" or kind == "fpellet":             # HOT fire moves burn brighter (spawn-time damage tells)
+		var hot := _proj_hot(p)
+		var core: Material = _fire_core_hot_mat if hot else _fire_core_mat
+		var glow: Material = _fire_glow_hot_mat if hot else _fire_glow_mat
+		if kind == "fpellet":
+			(n.get_child(0) as MeshInstance3D).material_override = glow
+		else:
+			(n.get_child(0) as MeshInstance3D).material_override = core
+			(n.get_child(1) as MeshInstance3D).material_override = glow
+	return n
+
+
+func _release_proj(id: int) -> void:
+	var n: Node3D = _proj_nodes[id]
+	var kind: String = _proj_kind[id]
+	if POOLED.has(kind):
+		n.visible = false
+		if not _proj_pool.has(kind):
+			_proj_pool[kind] = []
+		(_proj_pool[kind] as Array).append(n)
+	else:
+		n.queue_free()
+	_proj_nodes.erase(id)
+	_proj_kind.erase(id)
+	_proj_stamp.erase(id)
+
+
+# A player's fire projectile spawned while HOT (or boosted by a combo) does more than its base damage.
+func _proj_hot(p) -> bool:
+	if p.team != "player":
+		return false
+	match String(p.kind):
+		"fpunch":
+			return p.damage > C.FPUNCH_DAMAGE * 1.01
+		"fbig":
+			return p.damage > C.FBIG_DAMAGE * 1.01
+		"fpellet":
+			return p.damage > C.FBURST_DAMAGE * 1.01
+	return false
+
+
 func _sync_projectiles() -> void:
-	var live := {}
+	_stamp += 1
+	var trail: bool = _time - _ptrail_last >= 0.05
+	if trail:
+		_ptrail_last = _time
+	var trails := 0
 	for p in world.projectiles:
-		var key := "%d%s" % [p.id, p.team]
-		live[key] = true
-		var n: Node3D = _proj_nodes.get(key)
+		var id: int = p.id
+		var kind: String = p.kind
+		var n: Node3D = _proj_nodes.get(id)
 		if n == null:
-			n = _make_proj_node(p)
-			add_child(n)
-			_proj_nodes[key] = n
+			n = _acquire_proj(p)
+			_proj_nodes[id] = n
+			_proj_kind[id] = kind
+		_proj_stamp[id] = _stamp
 		var dir: Vector3 = p.vel.normalized()
 		var up := Vector3.UP if absf(dir.y) < 0.98 else Vector3.RIGHT
 		n.look_at_from_position(p.pos, p.pos + dir, up)
-		if String(p.kind) == "slice":
+		if kind == "slice":
 			n.rotate_object_local(Vector3.FORWARD, p.roll)
-		elif String(p.kind) == "disc":
+		elif kind == "disc":
 			(n.get_child(0) as Node3D).rotation.y = _time * 25.0
-		elif String(p.kind) == "slab":
+		elif kind == "slab":
 			n.rotate_object_local(Vector3.RIGHT, _time * 5.0)
-		elif String(p.kind) == "punch":
+		elif kind == "punch":
 			n.scale = Vector3.ONE * (1.0 + 0.12 * sin(_time * 40.0))
-		elif String(p.kind) == "rock" or String(p.kind) == "boulder":
+		elif kind == "rock" or kind == "boulder":
 			n.rotate_object_local(Vector3.RIGHT, _time * 9.0)
-	for key in _proj_nodes.keys():
-		if not live.has(key):
-			_proj_nodes[key].queue_free()
-			_proj_nodes.erase(key)
+		elif kind == "fpunch" or kind == "fbig" or kind == "fpellet":
+			var hot := _proj_hot(p)
+			n.scale = Vector3.ONE * (1.4 if hot else 1.0)                  # hot flames are bigger
+			if trail and trails < 6 and (hot or kind == "fbig"):          # and leave a trail
+				trails += 1
+				puff(p.pos - dir * 0.4, -dir * 1.5, 0.3, (0.55 if kind == "fbig" else 0.3) * (1.4 if hot else 1.0), FIRE_HOT if hot else FIRE)
+		elif trail and trails < 6:
+			if kind == "slice" or kind == "punch":
+				trails += 1
+				puff(p.pos - dir * 0.3, -dir * 0.8, 0.28, 0.16, SPARK["punch"], false)
+			elif kind == "rock" or kind == "boulder":
+				trails += 1
+				puff(p.pos - dir * 0.3, Vector3.ZERO, 0.4, 0.3 if kind == "rock" else 0.6, DUST, false)
+			elif kind == "disc":
+				trails += 1
+				puff(p.pos - dir * 0.5, Vector3.ZERO, 0.3, 0.3, ICE, false)
+	if _proj_nodes.size() > world.projectiles.size():                    # some ended: release them (no per-frame dictionary or array built)
+		for id in _proj_nodes.keys():
+			if _proj_stamp[id] != _stamp:
+				_release_proj(id)
 
 
 # --- bots
@@ -1862,6 +1984,10 @@ func _build_bot_view(b = null) -> Dictionary:
 func update_bots() -> void:
 	var bdt: float = clampf(_time - _bot_last_t, 0.0, 0.1)
 	_bot_last_t = _time
+	_burn_t -= bdt
+	var burn_emit: bool = _burn_t <= 0.0
+	if burn_emit:
+		_burn_t = 0.12
 	for b in world.bots:
 		var v: Dictionary = _bot_views[b]
 		var root: Node3D = v["root"]
@@ -1871,6 +1997,8 @@ func update_bots() -> void:
 			continue
 		root.position = b.pos
 		root.rotation.y = b.yaw
+		if burn_emit and b.burn_t > 0.0:                      # burning: small flames rise off it
+			puff(b.pos + Vector3(_rng.randf_range(-0.3, 0.3), _rng.randf_range(0.3, 1.6), _rng.randf_range(-0.3, 0.3)), Vector3(0.0, 1.2, 0.0), 0.45, 0.22, FIRE)
 		var rig = v["rig"]
 		rig.flash(clampf(b.flash / 0.15, 0.0, 1.0))
 		var near_player: bool = cam.global_position.distance_to(b.pos) < C.BOT_SIGHT
@@ -1883,7 +2011,7 @@ func update_bots() -> void:
 			bstance = "breath"
 		elif b.suck_t > 0.0:
 			bstance = "suction"
-		elif b.jet_t > 0.0 or b.octo_t > 0.0 or b.flame_t > 0.0:
+		elif b.jet_t > 0.0 or b.octo_t > 0.0:
 			bstance = "breath"
 		elif b.light_t > 0.0:
 			bstance = "charge"
@@ -2196,7 +2324,7 @@ func _update_player_rigs(dt: float, feet: Vector3) -> void:
 		arm_stance = "swim"
 	elif sim.gliding:
 		arm_stance = "glide"
-	elif sim.breath_t > 0.0 or sim.jet_on or sim.flaming:
+	elif sim.breath_t > 0.0 or sim.jet_on or sim.fcharging:
 		arm_stance = "breath"
 	elif sim.light_t >= 0.0:
 		arm_stance = "charge"

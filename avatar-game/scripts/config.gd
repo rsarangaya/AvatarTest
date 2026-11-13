@@ -97,6 +97,13 @@ const SCOOTER_SLOPE_GAIN := 0.8
 const SCOOTER_MAX_SPEED := 26.0
 const SCOOTER_JUMP_MULT := 1.15
 
+# ---- Z (air): Air Dash, a 3D burst along where you look (up too). One per airborne time (landing re-arms), short cooldown.
+const ADASH_DIST := 9.0
+const ADASH_TIME := 0.18
+const ADASH_COST := 22.0
+const ADASH_COOLDOWN := 2.5
+const ADASH_EXIT_SPEED := 10.0           # total speed when the dash ends (no free flight: gravity takes over again)
+
 # ---- Left click: tap = Air Punch, hold = charge an Air Blast ----
 const TAP_TIME := 0.22                   # held longer than this = charging
 const PUNCH_COST := 11.0
@@ -626,16 +633,16 @@ const PROJ_TOUGHNESS := {
 	"boulder": 3,
 	"slab": 3,       # thrown earth wall
 	"disc": 3,       # ice disc (still passes through enemies)
-	"fpunch": 1,     # fire punch
-	"farc": 2,       # flame arc
-	"cbeam": 3,      # combustion beam (its blast comes later)
+	"fpunch": 1,     # small fireball
+	"fpellet": 1,    # flame burst pellet
+	"fbig": 2,       # big fireball
 }
 const CLASH_PAD := 0.1                    # m added to the two radii when testing a touch
 
 
 # ---- Fire nation (firebender). Resource: the INNER FIRE heat meter (0..100), shown in the chi bar. No chi, no melee fallback.
 # Spam DPS target 40-55 (see tests/damage_table.gd). Heat rises with every attack and a little with damage dealt; it only
-# falls when you have not attacked for HEAT_IDLE seconds. Above HEAT_HOT you are HOT (+20% damage and dash distance).
+# falls when you have not attacked for HEAT_IDLE seconds. Above HEAT_HOT you are HOT (+20% damage).
 const HEAT_MAX := 100.0
 const HEAT_HOT := 70.0
 const HOT_MULT := 1.2
@@ -650,35 +657,36 @@ const OVERHEAT_TIME := 2.0               # at 100% heat: no moves for this long,
 const OVERHEAT_MOVE_MULT := 0.5
 const OVERHEAT_RESET := 50.0             # heat after an overheat ends
 const FIRE_THAW_TIME := 0.5              # a firebender frozen solid thaws in this long
-# LMB tap: fire punch (a short, quick fireball)
-const FPUNCH_DAMAGE := 12.0
-const FPUNCH_COOLDOWN := 0.28
-const FPUNCH_SPEED := 38.0
-const FPUNCH_LIFE := 0.32                # about 12 m
-const FPUNCH_RADIUS := 0.5
-const FPUNCH_KNOCK := 4.0
-const FPUNCH_HEAT := 4.0
-# LMB hold: flame jet (about 45 DPS, 7 m cone)
-const FLAME_DPS := 45.0
-const FLAME_RANGE := 7.0
-const FLAME_CONE_COS := 0.88
-const FLAME_PUSH := 3.0                  # gentle shove (m/s) so it does not pin anyone
-const FLAME_HEAT := 14.0                 # per second
-const FLAME_MOVE_MULT := 0.7
-const FLAME_ICE_STEP := 0.4              # seconds between hits on an ice wall (ice melts: it breaks fast)
-# RMB: fire whip
-const FWHIP_DAMAGE := 22.0
-const FWHIP_REACH := 6.0
-const FWHIP_WIDTH := 0.9
-const FWHIP_COOLDOWN := 0.9
-const FWHIP_KNOCK := 7.0
-const FWHIP_HEAT := 10.0
-# Q: fire dash (burst of 12 m; one in the air per landing; ground cooldown)
-const FDASH_DIST := 12.0
-const FDASH_TIME := 0.16
-const FDASH_COOLDOWN := 2.5
-const FDASH_EXIT_SPEED := 11.0
-const FDASH_HEAT := 8.0
+# LMB tap: small fireball (fast fire rate, long range). About 42 DPS spam (50 hot).
+const FPUNCH_DAMAGE := 8.0
+const FPUNCH_COOLDOWN := 0.19
+const FPUNCH_SPEED := 40.0
+const FPUNCH_LIFE := 0.55                # about 22 m
+const FPUNCH_RADIUS := 0.4
+const FPUNCH_KNOCK := 3.0
+const FPUNCH_HEAT := 3.0
+# LMB hold (longer than TAP_TIME), let go: big fireball. Slower and hotter per damage than the small ones (about 25 DPS direct).
+const FBIG_DAMAGE := 28.0
+const FBIG_SPLASH_DAMAGE := 14.0         # to everything else within FBIG_SPLASH of where it bursts
+const FBIG_SPLASH := 3.0
+const FBIG_COOLDOWN := 1.1
+const FBIG_SPEED := 30.0
+const FBIG_LIFE := 0.75                  # about 22 m
+const FBIG_RADIUS := 0.9
+const FBIG_KNOCK := 8.0
+const FBIG_HEAT := 16.0
+const FBIG_MOVE_MULT := 0.75             # slower while winding up
+# RMB: flame burst (shotgun: a spread of pellets, strong point blank, weak far away)
+const FBURST_PELLETS := 7
+const FBURST_DAMAGE := 6.5               # per pellet at point blank (all seven hit = 45); falls to 35% at the end of its flight
+const FBURST_MIN_FRAC := 0.35
+const FBURST_SPREAD := 0.16              # radians, half angle of the cone
+const FBURST_SPEED := 32.0
+const FBURST_LIFE := 0.3                 # about 9 m
+const FBURST_RADIUS := 0.3
+const FBURST_KNOCK := 2.0
+const FBURST_COOLDOWN := 0.85
+const FBURST_HEAT := 12.0
 # F: fire ring (the main defense): 360 degree burn + knockback, then a guard that destroys incoming projectiles
 const RING_RADIUS := 6.0
 const RING_DAMAGE := 30.0
@@ -690,32 +698,23 @@ const RING_HEAT := 18.0
 const RING_GUARD_TIME := 2.2             # seconds of guard after the burst
 const RING_GUARD_RADIUS := 3.6           # incoming (non-ultimate) projectiles inside this are burnt up
 const RING_GUARD_TAKE := 0.3             # direct damage taken while the guard is up
-# Z: flame arcs (3 crescents, toughness 2)
-const FARC_DAMAGE := 16.0
-const FARC_COUNT := 3
-const FARC_SPREAD := 0.16
-const FARC_SPEED := 30.0
-const FARC_LIFE := 0.8
-const FARC_RADIUS := 0.7
-const FARC_KNOCK := 5.0
-const FARC_COOLDOWN := 4.0
-const FARC_HEAT := 14.0
-# T: combustion beam: a fast beam, the blast comes COMBUST_DELAY later where it hit
-const CBEAM_SPEED := 80.0
-const CBEAM_LIFE := 0.55
-const CBEAM_RADIUS := 0.35
-const COMBUST_DELAY := 0.55
-const COMBUST_RADIUS := 4.5
-const COMBUST_DAMAGE := 45.0
-const COMBUST_KNOCK := 12.0
-const COMBUST_COOLDOWN := 14.0
-const COMBUST_HEAT := 18.0
-# X tap: Dragon Rush (steerable fire-jet flight, about 55 DPS to everything near the flame, 9 s)
-const RUSH_TIME := 9.0
+# Z: fire kick (a lunge forward, then an axe kick: a short arc in front)
+const FKICK_LUNGE_DIST := 4.5
+const FKICK_LUNGE_TIME := 0.2
+const FKICK_EXIT_SPEED := 8.0
+const FKICK_REACH := 3.4
+const FKICK_CONE_COS := 0.45             # about 63 degrees either side
+const FKICK_DAMAGE := 28.0
+const FKICK_KNOCK := 10.0
+const FKICK_STUN := 0.9                  # knocked down for this long
+const FKICK_COOLDOWN := 3.5
+const FKICK_HEAT := 14.0
+# X tap: Dragon Rush (steerable fire-jet flight, about 45 DPS to everything near the flame, 5.5 s)
+const RUSH_TIME := 5.5
 const RUSH_SPEED := 26.0
 const RUSH_TURN := 2.6                   # rad/s the flight direction swings towards where you look
 const RUSH_RADIUS := 3.2
-const RUSH_DPS := 55.0
+const RUSH_DPS := 45.0
 const RUSH_PUSH := 6.0
 const RUSH_MIN_CLEARANCE := 1.2          # stays this far above the ground
 # X hold: Lightning (about 2 s standing still and focused, then a bolt). Blocked by earth walls and earth armor.
@@ -732,8 +731,37 @@ const LIGHT_WET_MULT := 1.3              # a target standing in water conducts: 
 const LIGHT_ARMOR_COST := 40.0           # earth armor soaks the whole bolt and loses this much
 # bots
 const BOT_FIRE_BACKOFF_HEAT := 90.0
-const BOT_FLAME_DPS := 30.0
 const BOT_RING_DAMAGE := 20.0
 const BOT_LIGHT_DAMAGE := 55.0
-const BOT_BURN_FX_STEP := 0.1            # seconds between flame effect events from a bot's jet
+const BOT_KICK_DAMAGE := 20.0
+const BOT_BURST_DAMAGE := 3.0            # per pellet
 const BOT_AI_FIRE_STEP := 0.2            # a fire duelist decides at most this often
+
+# ---- Burn: fire hits can set a short damage over time (water or swimming puts it out). Works on bots and the player.
+const BURN_CHANCE := 0.15                # per fire hit (fireball, big fireball, kick); a flame-burst pellet rolls BURN_PELLET_MULT of it
+const BURN_PELLET_MULT := 0.3
+const BURN_TIME := 3.0
+const BURN_DPS := 5.0
+
+# ---- Lightning extras
+const LIGHT_CHAIN_RANGE := 12.0          # a full-charge bolt that strikes a target standing in water jumps to others in water within this
+const LIGHT_CHAIN_MAX := 3               # at most this many extra targets
+const LIGHT_CHAIN_FALLOFF := 0.6         # each jump does this fraction of the one before
+const LIGHT_DUEL_WINDOW := 0.45          # a bolt fired at a target that is also charging lightning waits this long: if the target fires, the bolt is thrown back
+
+# ---- Combos: an opener, then the finisher within COMBO_WINDOW seconds hits harder (finisher damage x mult). One per nation.
+const COMBO_WINDOW := 1.0
+const COMBOS := {
+	"fire": {"open": "fkick", "finish": "fburst", "mult": 1.6, "text": "KICK + BURST!", "cue": "flame burst (RMB) now"},
+	"air": {"open": "adash", "finish": "slice", "mult": 1.8, "text": "DASH SLICE!", "cue": "air slice (RMB) now"},
+	"earth": {"open": "barrage", "finish": "boulder", "mult": 1.5, "text": "QUAKE BOULDER!", "cue": "boulder (RMB) now"},
+	"water": {"open": "shards", "finish": "whip", "mult": 2.0, "text": "FROST LASH!", "cue": "whip (LMB tap) now"},
+}
+
+# ---- Kill effects per game mode (world.bot_mode): what a kill gives the player. A mode without an entry (or with {}) gives nothing.
+# "speed" = extra move speed (0.25 = +25%) for "time" seconds. Duel has none: it is a one-on-one.
+const MODE_KILL_EFFECTS := {
+	"duel": {},
+	"fighters": {"speed": 0.25, "time": 3.0},
+	"benders": {"speed": 0.25, "time": 3.0},
+}

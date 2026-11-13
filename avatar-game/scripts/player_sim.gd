@@ -143,23 +143,30 @@ var heat := 0.0                  # Inner Fire 0..HEAT_MAX (shown in the chi bar)
 var heat_idle := 0.0             # seconds since the last attack (heat only falls after HEAT_IDLE)
 var overheat_t := 0.0            # > 0: overheated, no moves
 var soak_t := 0.0                # > 0: soaked by water: no ring, no lightning
-var flaming := false             # flame jet running
-var flame_ice_t := 0.0
-var fpunch_cd := 0.0
-var fwhip_cd := 0.0
-var dash_cd := 0.0
-var dash_t := 0.0                # > 0 while the fire dash burst runs
-var dash_dir := Vector3.ZERO
+var fcharging := false           # holding LMB: the big fireball is winding up
+var fpunch_cd := 0.0             # small fireball
+var fbig_cd := 0.0
+var fburst_cd := 0.0
+var dash_cd := 0.0               # air dash (air) / fire kick (fire) cooldown
+var dash_t := 0.0                # > 0 while an air dash or the fire kick lunge runs
+var dash_dir := Vector3.ZERO     # unit vector (3D for the air dash, flat for the kick)
 var dash_speed := 0.0
-var dash_air_used := false       # one dash in the air per landing
+var dash_exit := 0.0             # speed cap when the dash ends
+var dash_kick := false           # the running dash is a fire kick: the hit lands when the lunge ends
+var dash_air_used := false       # one dash in the air per landing (air dash, fire kick)
 var ring_cd := 0.0
 var guard_t := 0.0               # fire ring guard: little damage taken, projectiles burn up inside it
-var farc_cd := 0.0
-var combust_cd := 0.0
 var rush_t := 0.0                # seconds of Dragon Rush left
 var rush_dir := Vector3.ZERO
 var light_t := -1.0              # >= 0 while charging lightning (seconds so far)
 var _rush_fx_acc := 0.0
+# burn, combos, kill momentum
+var burn_t := 0.0                # > 0: burning (small damage over time; water puts it out)
+var _burn_acc := 0.0
+var combo_t := 0.0               # > 0: the nation's combo opener was just used; the finisher now hits harder
+var boulder_mult := 1.0          # combo multiplier carried by the boulder being pulled
+var momentum_t := 0.0            # > 0: kill momentum (a speed boost from a kill, only in modes that give it)
+var momentum_mult := 0.0
 
 var mantle := {}
 var events: Array = []
@@ -187,6 +194,11 @@ func respawn() -> void:
 	melee_combo = 0
 	melee_hold = false
 	boulder_pull = {}
+	burn_t = 0.0
+	_burn_acc = 0.0
+	combo_t = 0.0
+	boulder_mult = 1.0
+	momentum_t = 0.0
 	pillar_charges = C.PILLAR_CHARGES
 	pillar_recharge = 0.0
 	bullet_cd = 0.0
@@ -214,8 +226,9 @@ func respawn() -> void:
 	heat_idle = 0.0
 	overheat_t = 0.0
 	soak_t = 0.0
-	flaming = false
+	fcharging = false
 	dash_t = 0.0
+	dash_kick = false
 	dash_air_used = false
 	guard_t = 0.0
 	rush_t = 0.0
@@ -297,9 +310,11 @@ func state_name() -> String:
 		if overheat_t > 0.0:
 			return "OVERHEATED"
 		if dash_t > 0.0:
-			return "FIRE DASH"
-		if flaming:
-			return "FLAME JET"
+			return "FIRE KICK"
+		if fcharging:
+			return "FIREBALL"
+	if dash_t > 0.0 and element == "air":
+		return "AIR DASH"
 	if octo_t > 0.0:
 		return "OCTOPUS FORM"
 	if jet_on:
@@ -384,7 +399,60 @@ func step(dt: float, inp: InputState) -> void:
 	world.dealt = 0.0
 	if element == "fire":
 		_update_heat(dt)
+	if world.kills > 0:
+		_kill_effect()
 	world.kills = 0
+
+
+# What a kill gives, by game mode (C.MODE_KILL_EFFECTS): a short speed boost in the bot modes, nothing in a duel.
+func _kill_effect() -> void:
+	var ke: Dictionary = world.kill_effect()
+	if ke.has("speed"):
+		momentum_t = float(ke["time"])
+		momentum_mult = float(ke["speed"])
+		events.append({"type": "momentum", "pos": pos})
+
+
+# ---- burn: set by a fire hit (world.roll_burn_player), put out by water
+func ignite() -> void:
+	if burn_t <= 0.0:
+		events.append({"type": "burn_on", "pos": pos})
+	burn_t = C.BURN_TIME
+
+
+func _update_burn(dt: float) -> void:
+	if burn_t <= 0.0:
+		return
+	if water_depth >= C.SOAK_DEPTH or swimming:
+		burn_t = 0.0
+		_burn_acc = 0.0
+		events.append({"type": "burn_out", "pos": pos})
+		return
+	burn_t = maxf(0.0, burn_t - dt)
+	_burn_acc += C.BURN_DPS * dt
+	if _burn_acc >= 1.25:                                # a small tick every quarter second, not a hurt event per sim step
+		var a := _burn_acc
+		_burn_acc = 0.0
+		take_damage(a, true)
+
+
+# ---- combos (C.COMBOS): the opener starts a short window, the finisher inside it multiplies its damage
+func _combo_open(move: String) -> void:
+	var c: Dictionary = C.COMBOS.get(element, {})
+	if not c.is_empty() and c["open"] == move:
+		combo_t = C.COMBO_WINDOW
+		events.append({"type": "combo_ready", "pos": pos, "cue": c["cue"]})
+
+
+func _combo_mult(move: String) -> float:
+	if combo_t <= 0.0:
+		return 1.0
+	var c: Dictionary = C.COMBOS.get(element, {})
+	if c.is_empty() or c["finish"] != move:
+		return 1.0
+	combo_t = 0.0
+	events.append({"type": "combo", "pos": pos, "text": c["text"]})
+	return float(c["mult"])
 
 
 func _clear_cooldowns() -> void:
@@ -412,12 +480,11 @@ func _clear_cooldowns() -> void:
 	octo_slam_cd = 0.0
 	octo_q_cd = 0.0
 	fpunch_cd = 0.0
-	fwhip_cd = 0.0
+	fbig_cd = 0.0
+	fburst_cd = 0.0
 	dash_cd = 0.0
 	dash_air_used = false
 	ring_cd = 0.0
-	farc_cd = 0.0
-	combust_cd = 0.0
 	heat = 0.0                                     # debug: no overheat
 	overheat_t = 0.0
 
@@ -467,13 +534,14 @@ func _step(dt: float, inp: InputState) -> void:
 	octo_slam_cd = maxf(0.0, octo_slam_cd - dt)
 	octo_q_cd = maxf(0.0, octo_q_cd - dt)
 	ult_lock = maxf(0.0, ult_lock - dt)
+	dash_cd = maxf(0.0, dash_cd - dt)
+	combo_t = maxf(0.0, combo_t - dt)
+	momentum_t = maxf(0.0, momentum_t - dt)
 	if element == "fire":
 		fpunch_cd = maxf(0.0, fpunch_cd - dt)
-		fwhip_cd = maxf(0.0, fwhip_cd - dt)
-		dash_cd = maxf(0.0, dash_cd - dt)
+		fbig_cd = maxf(0.0, fbig_cd - dt)
+		fburst_cd = maxf(0.0, fburst_cd - dt)
 		ring_cd = maxf(0.0, ring_cd - dt)
-		farc_cd = maxf(0.0, farc_cd - dt)
-		combust_cd = maxf(0.0, combust_cd - dt)
 		guard_t = maxf(0.0, guard_t - dt)
 	near_water = element == "water" and _wet_within(C.WATER_FREE_RADIUS)
 	if element == "water":
@@ -578,16 +646,19 @@ func _step(dt: float, inp: InputState) -> void:
 		move_mult = minf(move_mult, C.ARMOR_MOVE_MULT)
 	if overheat_t > 0.0:
 		move_mult = minf(move_mult, C.OVERHEAT_MOVE_MULT)
-	if flaming:
-		move_mult = minf(move_mult, C.FLAME_MOVE_MULT)
+	if fcharging:
+		move_mult = minf(move_mult, C.FBIG_MOVE_MULT)
 	if light_t >= 0.0:
 		move_mult = minf(move_mult, C.LIGHT_MOVE_MULT)
 	if not world.held.is_empty():
 		move_mult = minf(move_mult, C.HELD_MOVE_MULT)
+	if momentum_t > 0.0:
+		move_mult *= 1.0 + momentum_mult                     # kill momentum
 
 	water_depth = world.terrain.water_depth_at(pos.x, pos.z)
 	var was_swim := swimming
 	swimming = water_depth >= C.SWIM_DEPTH or (was_swim and water_depth >= C.SWIM_DEPTH - 0.35)
+	_update_burn(dt)
 	if swimming != was_swim:
 		events.append({"type": "splash", "pos": Vector3(pos.x, world.terrain.surface_at(pos.x, pos.z), pos.z), "big": absf(vel.y) > 6.0})
 		if swimming:
@@ -998,7 +1069,7 @@ func _update_abilities(dt: float, inp: InputState) -> void:
 	if inp.scooter_pressed:
 		inp.scooter_pressed = false
 		if element == "fire":
-			_fire_dash()
+			pass
 		elif element == "water":
 			_water_q()
 		elif element == "earth":
@@ -1070,7 +1141,8 @@ func _update_abilities(dt: float, inp: InputState) -> void:
 			boulder_pull = {}
 			var bo := origin + look * C.BOULDER_HOLD_DIST + Vector3(0.0, 0.15, 0.0)
 			var bp = world.spawn_proj("boulder", "player", bo, look * C.BOULDER_SPEED + Vector3(0.0, 1.5, 0.0),
-					C.BOULDER_LIFE, C.BOULDER_RADIUS, C.BOULDER_DAMAGE, C.BOULDER_KNOCKBACK, false)
+					C.BOULDER_LIFE, C.BOULDER_RADIUS, C.BOULDER_DAMAGE * boulder_mult, C.BOULDER_KNOCKBACK, false)
+			boulder_mult = 1.0
 			bp.grav = C.BOULDER_GRAVITY
 			events.append({"type": "boulder", "origin": origin, "dir": look})
 
@@ -1155,6 +1227,8 @@ func _update_abilities(dt: float, inp: InputState) -> void:
 		inp.barrage_pressed = false
 		if element == "earth" and not charging:
 			_try_barrage(look, origin)
+		elif element == "air" and not charging:
+			_try_air_dash(look)
 
 	if element == "earth":
 		shield_on = false
@@ -1268,7 +1342,7 @@ func _try_slice(look: Vector3, origin: Vector3) -> void:
 	slice_cd = C.SLICE_COOLDOWN
 	slice_flip = not slice_flip
 	world.spawn_proj("slice", "player", origin + look * 0.9 + Vector3(0.0, -0.2, 0.0), look * C.SLICE_SPEED,
-			C.SLICE_LIFE, C.SLICE_RADIUS, C.SLICE_DAMAGE, C.SLICE_KNOCKBACK, true, 0.95 if slice_flip else -0.95)
+			C.SLICE_LIFE, C.SLICE_RADIUS, C.SLICE_DAMAGE * _combo_mult("slice"), C.SLICE_KNOCKBACK, true, 0.95 if slice_flip else -0.95)
 	events.append({"type": "slice", "origin": origin, "dir": look})
 
 
@@ -1318,6 +1392,7 @@ func _try_boulder(look: Vector3, origin: Vector3) -> void:
 	chi -= C.BOULDER_COST
 	chi_delay = C.CHI_REGEN_DELAY
 	boulder_cd = C.BOULDER_COOLDOWN
+	boulder_mult = _combo_mult("boulder")
 	# the nearest ground, wall or hillside along your sight line (or just ahead of your feet) is the source
 	var src: Vector3
 	var r: Dictionary = world.aim_point(origin, look, C.BOULDER_REACH)
@@ -1364,6 +1439,7 @@ func _try_barrage(look: Vector3, origin: Vector3) -> void:
 		p.grav = C.ROCK_GRAVITY
 		p.splash = C.BARRAGE_SPLASH_DAMAGE
 	events.append({"type": "barrage", "origin": origin, "dir": look})
+	_combo_open("barrage")
 
 
 func _fire_wave(c: float, look: Vector3, origin: Vector3) -> void:
@@ -1674,7 +1750,7 @@ func _try_whip(look: Vector3, origin: Vector3) -> void:
 	_spend(C.WHIP_COST, _landing(origin, look, C.WHIP_REACH))
 	chi_delay = C.WATER_PASSIVE_DELAY
 	punch_cd = C.WHIP_COOLDOWN
-	var hits: int = world.apply_whip(origin, look, C.WHIP_REACH, C.WHIP_WIDTH, C.WHIP_DAMAGE, C.WHIP_KNOCKBACK)
+	var hits: int = world.apply_whip(origin, look, C.WHIP_REACH, C.WHIP_WIDTH, C.WHIP_DAMAGE * _combo_mult("whip"), C.WHIP_KNOCKBACK)
 	whip_flip = not whip_flip
 	events.append({"type": "whip", "origin": origin, "dir": look, "hits": hits, "flip": whip_flip})
 
@@ -1698,6 +1774,7 @@ func _try_shards(look: Vector3, origin: Vector3) -> void:
 				d * C.SHARD_SPEED, C.SHARD_LIFE, C.SHARD_RADIUS, C.SHARD_DAMAGE, C.SHARD_KNOCKBACK, false)
 		sp.water = shard_water / float(n) * 3.0           # (a bit more than its share: a tiny puddle is no use to anyone)
 	events.append({"type": "shards", "origin": origin, "dir": look})
+	_combo_open("shards")
 
 
 func _try_ice_wall(look: Vector3) -> void:
@@ -1807,7 +1884,7 @@ func _release_channels() -> void:
 	elevating = false
 	sliding = false
 	jet_on = false
-	flaming = false
+	fcharging = false
 	light_t = -1.0
 	gathering = false
 	freezing = false
@@ -1903,8 +1980,8 @@ func _update_heat(dt: float) -> void:
 	if wet:
 		soak_t = C.SOAK_TIME
 		heat -= C.HEAT_SOAK_DROP * dt
-		if flaming:
-			flaming = false
+		if fcharging:
+			fcharging = false
 		if guard_t > 0.0:
 			guard_t = 0.0                                 # water puts the ring out
 			events.append({"type": "too_wet"})
@@ -1924,9 +2001,10 @@ func _update_heat(dt: float) -> void:
 			events.append({"type": "overheat_end"})
 	elif heat >= C.HEAT_MAX - 0.001 and not debug_nocd:
 		overheat_t = C.OVERHEAT_TIME
-		flaming = false
+		fcharging = false
 		fire_down = false
 		dash_t = 0.0
+		dash_kick = false
 		if light_t >= 0.0:
 			light_t = -1.0
 		events.append({"type": "overheat", "pos": pos})
@@ -1940,7 +2018,7 @@ func _update_fire(dt: float, inp: InputState, look: Vector3, origin: Vector3) ->
 	if overheat_t > 0.0:                                 # overheated: nothing works until it passes
 		_clear_edges(inp)
 		inp.fire_held = false
-		flaming = false
+		fcharging = false
 		fire_down = false
 		ult_hold = -1.0
 		_e_edge = false
@@ -1949,7 +2027,7 @@ func _update_fire(dt: float, inp: InputState, look: Vector3, origin: Vector3) ->
 
 	if rush_t > 0.0:                                     # the rush has its own controls (steer with the mouse)
 		_clear_edges(inp)
-		flaming = false
+		fcharging = false
 		fire_down = false
 		return
 
@@ -1966,7 +2044,7 @@ func _update_fire(dt: float, inp: InputState, look: Vector3, origin: Vector3) ->
 			return
 	if light_t >= 0.0:
 		_clear_edges(inp)
-		flaming = false
+		fcharging = false
 		fire_down = false
 		if water_depth >= C.SOAK_DEPTH:
 			light_t = -1.0                                # stepped into water: the charge is lost, the meter is kept
@@ -1984,45 +2062,35 @@ func _update_fire(dt: float, inp: InputState, look: Vector3, origin: Vector3) ->
 				_fire_lightning(look, origin)
 		return
 
-	# Left button: tap = fire punch, hold = flame jet
+	# Left button: tap = small fireball, hold and let go = big fireball
 	if inp.fire_pressed:
 		inp.fire_pressed = false
 		fire_down = true
 		fire_time = 0.0
-		flaming = false
+		fcharging = false
 	if fire_down:
 		if inp.fire_held:
 			fire_time += dt
-			if fire_time >= C.TAP_TIME and soak_t <= 0.0:
-				if not flaming:
-					flaming = true
-					events.append({"type": "flame_start"})
-				_add_heat(C.FLAME_HEAT * dt)
-				world.apply_flame(origin, look, dt, C.FLAME_DPS * _hot_mult())
-				flame_ice_t -= dt
-				if flame_ice_t <= 0.0:
-					flame_ice_t = C.FLAME_ICE_STEP
-					world.flame_ice(origin, look)
+			if fire_time >= C.TAP_TIME and not fcharging:
+				fcharging = true
+				events.append({"type": "fbig_charge"})
 		else:
-			if flaming:
-				events.append({"type": "flame_end"})
+			if fcharging:
+				_try_fbig(look, origin)
 			elif fire_time < C.TAP_TIME:
 				_try_fpunch(look, origin)
-			flaming = false
+			fcharging = false
 			fire_down = false
 
-	# Right click: fire whip
+	# Right click: flame burst
 	if inp.slice_pressed:
 		inp.slice_pressed = false
-		_try_fwhip(look, origin)
+		_try_fburst(look, origin)
 
-	# Z: flame arcs, T: combustion beam, F: fire ring
+	# Z: fire kick, F: fire ring
 	if inp.barrage_pressed:
 		inp.barrage_pressed = false
-		_try_farcs(look, origin)
-	if inp.freeze_pressed:
-		inp.freeze_pressed = false
-		_try_combustion(look, origin)
+		_try_fkick()
 	if _f_edge:
 		_try_ring(origin)
 
@@ -2037,40 +2105,37 @@ func _try_fpunch(look: Vector3, origin: Vector3) -> void:
 	events.append({"type": "fpunch", "origin": origin, "dir": look})
 
 
-func _try_fwhip(look: Vector3, origin: Vector3) -> void:
-	if fwhip_cd > 0.0:
+# Big fireball: a hit hurts, and it bursts for splash damage around where it lands.
+func _try_fbig(look: Vector3, origin: Vector3) -> void:
+	if fbig_cd > 0.0:
 		return
-	fwhip_cd = C.FWHIP_COOLDOWN
-	_add_heat(C.FWHIP_HEAT)
-	var hits: int = world.apply_whip(origin, look, C.FWHIP_REACH, C.FWHIP_WIDTH, C.FWHIP_DAMAGE * _hot_mult(), C.FWHIP_KNOCK)
-	whip_flip = not whip_flip
-	events.append({"type": "fwhip", "origin": origin, "dir": look, "hits": hits, "flip": whip_flip})
+	fbig_cd = C.FBIG_COOLDOWN
+	fpunch_cd = maxf(fpunch_cd, 0.3)                      # no small fireball right on its heels
+	_add_heat(C.FBIG_HEAT)
+	var p = world.spawn_proj("fbig", "player", origin + look * 0.9 + Vector3(0.0, -0.2, 0.0), look * C.FBIG_SPEED,
+			C.FBIG_LIFE, C.FBIG_RADIUS, C.FBIG_DAMAGE * _hot_mult(), C.FBIG_KNOCK, false)
+	p.splash = C.FBIG_SPLASH_DAMAGE * _hot_mult()
+	events.append({"type": "fbig", "origin": origin, "dir": look})
 
 
-func _try_farcs(look: Vector3, origin: Vector3) -> void:
-	if farc_cd > 0.0:
+# Flame burst: a spread of pellets in a fixed sunflower pattern (no random numbers: the sim stays deterministic).
+func _try_fburst(look: Vector3, origin: Vector3) -> void:
+	if fburst_cd > 0.0:
 		return
-	farc_cd = C.FARC_COOLDOWN
-	_add_heat(C.FARC_HEAT)
+	fburst_cd = C.FBURST_COOLDOWN
+	_add_heat(C.FBURST_HEAT)
+	var cm := _combo_mult("fburst")
 	var right := look.cross(Vector3.UP)
 	right = right.normalized() if right.length() > 0.01 else Vector3.RIGHT
-	var n := C.FARC_COUNT
+	var up := right.cross(look)
+	var n := C.FBURST_PELLETS
 	for k in range(n):
-		var t := float(k) - float(n - 1) * 0.5
-		var d := (look + right * t * C.FARC_SPREAD).normalized()
-		world.spawn_proj("farc", "player", origin + look * 1.0 + right * t * 0.3 + Vector3(0.0, -0.25, 0.0), d * C.FARC_SPEED,
-				C.FARC_LIFE, C.FARC_RADIUS, C.FARC_DAMAGE * _hot_mult(), C.FARC_KNOCK, false, 0.0)
-	events.append({"type": "farcs", "origin": origin, "dir": look})
-
-
-func _try_combustion(look: Vector3, origin: Vector3) -> void:
-	if combust_cd > 0.0:
-		return
-	combust_cd = C.COMBUST_COOLDOWN
-	_add_heat(C.COMBUST_HEAT)
-	world.spawn_proj("cbeam", "player", origin + look * 0.8 + Vector3(0.0, -0.2, 0.0), look * C.CBEAM_SPEED,
-			C.CBEAM_LIFE, C.CBEAM_RADIUS, C.COMBUST_DAMAGE * _hot_mult(), 0.0, false)
-	events.append({"type": "combust_cast", "origin": origin, "dir": look})
+		var ang := float(k) * 2.39996
+		var rad := sqrt((float(k) + 0.5) / float(n)) * C.FBURST_SPREAD
+		var d := (look + (right * cos(ang) + up * sin(ang)) * rad).normalized()
+		world.spawn_proj("fpellet", "player", origin + look * 0.8 + Vector3(0.0, -0.2, 0.0), d * C.FBURST_SPEED,
+				C.FBURST_LIFE, C.FBURST_RADIUS, C.FBURST_DAMAGE * _hot_mult() * cm, C.FBURST_KNOCK, false)
+	events.append({"type": "fburst", "origin": origin, "dir": look})
 
 
 func _try_ring(origin: Vector3) -> void:
@@ -2085,39 +2150,78 @@ func _try_ring(origin: Vector3) -> void:
 	events.append({"type": "fring", "pos": pos, "radius": C.RING_RADIUS, "hits": hits})
 
 
-# Q: a burst of fire: FDASH_DIST metres in a moment, where you are heading (or looking). One dash in the air per landing.
-func _fire_dash() -> void:
-	if dash_cd > 0.0 or overheat_t > 0.0 or rush_t > 0.0 or light_t >= 0.0 or swimming:
+# Z (fire): a lunge forward, then an axe kick where you land. Not while swimming. In the air it uses the one dash per landing.
+func _try_fkick() -> void:
+	if dash_cd > 0.0 or overheat_t > 0.0 or rush_t > 0.0 or light_t >= 0.0 or swimming or dash_t > 0.0:
 		return
 	if not on_ground and dash_air_used:
 		return
 	var d := Vector3(-sin(yaw), 0.0, -cos(yaw))
-	if speed() > 2.0:
-		d = Vector3(vel.x, 0.0, vel.z).normalized()
+	_start_dash(d, C.FKICK_LUNGE_DIST / C.FKICK_LUNGE_TIME, C.FKICK_LUNGE_TIME, C.FKICK_EXIT_SPEED, C.FKICK_COOLDOWN)
+	dash_kick = true
+	_add_heat(C.FKICK_HEAT)
+	events.append({"type": "fkick", "pos": pos, "dir": d})
+	_combo_open("fkick")
+
+
+# Z (air): a burst of ADASH_DIST metres along where you look, pitch included (look up and you climb). One in the air per
+# landing; a dash that leaves the ground counts as that one. Costs chi, short cooldown, ends at a capped exit speed.
+func _try_air_dash(look: Vector3) -> void:
+	if dash_cd > 0.0 or dash_t > 0.0 or swimming or chi < C.ADASH_COST or not slam.is_empty() or breath_t > 0.0 or quake_t > 0.0:
+		return
+	if not on_ground and dash_air_used:
+		return
+	chi = maxf(0.0, chi - C.ADASH_COST)
+	chi_delay = C.CHI_REGEN_DELAY
+	gliding = false
+	scooter = false
+	if look.y > 0.05:
+		on_ground = false                                 # climbing: leaves the ground at once (and uses the air dash)
+		ground_time = 0.0
+	_start_dash(look, C.ADASH_DIST / C.ADASH_TIME, C.ADASH_TIME, C.ADASH_EXIT_SPEED, C.ADASH_COOLDOWN)
+	events.append({"type": "adash", "pos": pos, "dir": look})
+	_combo_open("adash")
+
+
+func _start_dash(d: Vector3, spd: float, t: float, exit_speed: float, cd: float) -> void:
 	dash_dir = d
-	dash_t = C.FDASH_TIME
-	dash_speed = C.FDASH_DIST * _hot_mult() / C.FDASH_TIME
-	dash_cd = C.FDASH_COOLDOWN
+	dash_t = t
+	dash_speed = spd
+	dash_exit = exit_speed
+	dash_cd = cd
+	dash_kick = false
 	if not on_ground:
 		dash_air_used = true
 	if sliding:
 		_end_slide()
-	_add_heat(C.FDASH_HEAT)
-	events.append({"type": "fdash", "pos": pos, "dir": d})
 
 
 func _step_dash(dt: float) -> void:
 	dash_t -= dt
 	vel.x = dash_dir.x * dash_speed
 	vel.z = dash_dir.z * dash_speed
-	if not on_ground:
+	if dash_dir.y > 0.001 or (dash_dir.y < -0.001 and not on_ground):
+		vel.y = dash_dir.y * dash_speed
+	elif not on_ground:
 		vel.y = 0.0                                       # no falling mid-dash
 	_integrate(dt)
+	if dash_dir.y > 0.05 and not on_ground:
+		dash_air_used = true                              # a climbing dash that left the ground (even on a slope) is the air dash
 	if dash_t <= 0.0:
 		dash_t = 0.0
-		var k := minf(1.0, C.FDASH_EXIT_SPEED / maxf(speed(), 0.001))
-		vel.x *= k
-		vel.z *= k
+		var k := minf(1.0, dash_exit / maxf(vel.length(), 0.001))
+		vel *= k
+		if dash_kick:
+			dash_kick = false
+			_kick_hit()
+
+
+# The axe kick: a short arc in front of where the lunge ended.
+func _kick_hit() -> void:
+	var d := Vector3(dash_dir.x, 0.0, dash_dir.z)
+	var c := pos + Vector3(0.0, 1.0, 0.0)
+	var hits: int = world.apply_kick(c, d, C.FKICK_REACH, C.FKICK_CONE_COS, C.FKICK_DAMAGE * _hot_mult(), C.FKICK_KNOCK, C.FKICK_STUN)
+	events.append({"type": "fkick_hit", "pos": c, "dir": d, "hits": hits})
 
 
 # ---- ultimates: Dragon Rush (tap X) and Lightning (hold X)
@@ -2127,7 +2231,7 @@ func _start_rush(look: Vector3) -> void:
 	rush_t = C.RUSH_TIME
 	rush_dir = look
 	heat = 0.0
-	flaming = false
+	fcharging = false
 	fire_down = false
 	_release_channels()
 	on_ground = false
@@ -2183,7 +2287,7 @@ func _fire_lightning(look: Vector3, origin: Vector3) -> void:
 	light_t = -1.0
 	ult = 0.0
 	ult_lock = 0.6
-	var res: Dictionary = world.lightning(origin + Vector3(0.0, -0.15, 0.0), look, C.LIGHT_RANGE, C.LIGHT_DAMAGE * frac)
+	var res: Dictionary = world.lightning(origin + Vector3(0.0, -0.15, 0.0), look, C.LIGHT_RANGE, C.LIGHT_DAMAGE * frac, frac >= 0.999)
 	events.append({"type": "lightning_fire", "origin": origin, "dir": look, "frac": frac, "hit": res["hit"], "blocked": res["blocked"]})
 
 

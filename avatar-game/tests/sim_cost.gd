@@ -1,7 +1,7 @@
 extends SceneTree
 ## How long one 120 Hz simulation tick takes (headless): the game runs two of these per frame at 60 fps.
 ##   godot --headless --path . -s res://tests/sim_cost.gd
-## Water bots as before, plus a firebender player holding the flame jet / spamming moves among fire bots.
+## Water bots as before, plus a firebender player holding the big fireball / spamming moves among fire bots.
 
 const WorldScript = preload("res://scripts/world.gd")
 const SimScript = preload("res://scripts/player_sim.gd")
@@ -30,7 +30,7 @@ func _init() -> void:
 			var n := 1200
 			for i in range(n):
 				var inp := SimScript.InputState.new()
-				if nation == "fire":                       # the firebender keeps a jet going and throws moves around
+				if nation == "fire":                       # the firebender keeps fireballs going and throws moves around
 					inp.fire_held = true
 					if i % 120 == 0:
 						inp.fire_pressed = true
@@ -39,7 +39,7 @@ func _init() -> void:
 					if i % 200 == 0:
 						inp.suction_held = true
 					if i % 150 == 0:
-						inp.freeze_pressed = true
+						inp.slice_pressed = true
 				p.step(TICK, inp)
 				w.events.clear()
 				p.events.clear()

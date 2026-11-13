@@ -366,10 +366,10 @@ func _build_slots(root: Control) -> void:
 	var gold := Color(1.0, 0.85, 0.4)
 	var fire := Color(1.0, 0.55, 0.25)
 	var defs := {
-		"air": [["PUNCH", "LMB", air], ["SLICE", "RMB", air], ["SHIELD", "ability_e", air], ["SUCTION", "ability_f", air], ["SCOOTER", "ability_q", air], ["GUST", "2xSPC", air], ["ULT", "ultimate", gold]],
+		"air": [["PUNCH", "LMB", air], ["SLICE", "RMB", air], ["SHIELD", "ability_e", air], ["SUCTION", "ability_f", air], ["SCOOTER", "ability_q", air], ["GUST", "2xSPC", air], ["DASH", "ability_z", air], ["ULT", "ultimate", gold]],
 		"earth": [["ROCK", "LMB", earth], ["BOULDER", "RMB", earth], ["BARRAGE", "ability_z", earth], ["WALL", "ability_e", earth], ["PILLAR", "ability_f", earth], ["ARMOR", "ability_v", earth], ["SKATE", "ability_q", earth], ["ULT", "ultimate", gold]],
 		"water": [["WHIP", "LMB", water], ["HEAL", "RMB", water], ["SHARDS", "ability_z", water], ["ICE WALL", "ability_e", water], ["DISC", "ability_e", water], ["SKATE", "ability_q", water], ["FREEZE", "ability_freeze", water], ["PROPEL", "SPC", water], ["ULT", "ultimate", gold]],
-		"fire": [["PUNCH", "LMB", fire], ["WHIP", "RMB", fire], ["DASH", "ability_q", fire], ["RING", "ability_f", fire], ["ARCS", "ability_z", fire], ["BEAM", "ability_freeze", fire], ["ULT", "ultimate", gold]],
+		"fire": [["FIREBALL", "LMB", fire], ["BURST", "RMB", fire], ["KICK", "ability_z", fire], ["RING", "ability_f", fire], ["ULT", "ultimate", gold]],
 		"octo": [["L ARM", "LMB", water], ["R ARM", "RMB", water], ["SLAM", "ability_e", water], ["GRAB", "ability_q", water], ["ULT", "ultimate", gold]],
 	}
 	for k in defs:
@@ -409,6 +409,7 @@ func _update_slots(dt: float) -> void:
 			s[3].update_slot(dt, 0.0, 0.0, chi >= C.SUCTION_MIN_CHI or sim.suction_on, sim.suction_on)
 			s[4].update_slot(dt, 0.0, 0.0, chi > 0.0 or sim.scooter, sim.scooter)
 			s[5].update_slot(dt, sim.gust_cd, C.GUST_COOLDOWN, chi >= C.GUST_COST, false)
+			s[6].update_slot(dt, sim.dash_cd, C.ADASH_COOLDOWN, chi >= C.ADASH_COST and (sim.on_ground or not sim.dash_air_used), sim.dash_t > 0.0)
 		"earth":
 			s[0].update_slot(dt, sim.punch_cd, C.ROCK_COOLDOWN, chi >= C.ROCK_COST, false)
 			s[1].update_slot(dt, sim.boulder_cd, C.BOULDER_COOLDOWN, chi >= C.BOULDER_COST, false)
@@ -432,12 +433,10 @@ func _update_slots(dt: float) -> void:
 			s[7].update_slot(dt, sim.propel_cd, C.PROPEL_COOLDOWN, chi >= sim._cost(C.PROPEL_MIN), sim.propelling)
 		"fire":
 			var hot_ok: bool = sim.overheat_t <= 0.0
-			s[0].update_slot(dt, sim.fpunch_cd, C.FPUNCH_COOLDOWN, hot_ok, sim.flaming)
-			s[1].update_slot(dt, sim.fwhip_cd, C.FWHIP_COOLDOWN, hot_ok, false)
-			s[2].update_slot(dt, sim.dash_cd, C.FDASH_COOLDOWN, hot_ok and (sim.on_ground or not sim.dash_air_used), sim.dash_t > 0.0)
+			s[0].update_slot(dt, sim.fpunch_cd, C.FPUNCH_COOLDOWN, hot_ok, sim.fcharging)
+			s[1].update_slot(dt, sim.fburst_cd, C.FBURST_COOLDOWN, hot_ok, false)
+			s[2].update_slot(dt, sim.dash_cd, C.FKICK_COOLDOWN, hot_ok and (sim.on_ground or not sim.dash_air_used), sim.dash_t > 0.0)
 			s[3].update_slot(dt, sim.ring_cd, C.RING_COOLDOWN, hot_ok and sim.soak_t <= 0.0, sim.guard_t > 0.0)
-			s[4].update_slot(dt, sim.farc_cd, C.FARC_COOLDOWN, hot_ok, false)
-			s[5].update_slot(dt, sim.combust_cd, C.COMBUST_COOLDOWN, hot_ok, false)
 		"octo":
 			s[0].update_slot(dt, sim.octo_cd, C.OCTO_SWIPE_COOLDOWN, true, false)
 			s[1].update_slot(dt, sim.octo_cd_r, C.OCTO_SWIPE_COOLDOWN, true, false)
@@ -814,17 +813,25 @@ func _handle_events() -> void:
 				rig_shake = 1.0
 			"octo_grab", "octo_throw":
 				rig_shake = maxf(rig_shake, 0.35)
-			"fpunch", "fwhip", "farcs":
+			"fpunch":
 				rig_kick = 0.04
 				rig_fov_punch = 2.0
+			"fbig":
+				rig_kick = 0.1
+				rig_shake = maxf(rig_shake, 0.3)
+			"fburst":
+				rig_kick = 0.14
+				rig_shake = maxf(rig_shake, 0.4)
 			"fring":
 				rig_kick = -0.2
 				rig_shake = maxf(rig_shake, 0.6)
-			"fdash":
-				rig_fov_punch = 10.0
-			"combust_cast":
+			"fkick":
+				rig_fov_punch = 8.0
+			"fkick_hit":
 				rig_kick = 0.1
-				rig_shake = maxf(rig_shake, 0.3)
+				rig_shake = maxf(rig_shake, 0.5)
+			"adash":
+				rig_fov_punch = 10.0
 			"overheat":
 				rig_shake = maxf(rig_shake, 0.7)
 			"rush_start":
@@ -940,6 +947,12 @@ func _update_hud(dt: float) -> void:
 		etxt += "   GATHERING"
 	if water and sim.freezing and sim.octo_t <= 0.0:
 		etxt += "   FREEZE ON"
+	if sim.combo_t > 0.0:
+		etxt += "   COMBO! " + String(C.COMBOS[sim.element]["cue"])
+	if sim.burn_t > 0.0:
+		etxt += "   BURNING (water puts it out)"
+	if sim.momentum_t > 0.0:
+		etxt += "   MOMENTUM %.1f s" % sim.momentum_t
 	chi_text.text = ("INNER FIRE  %d%%" % int(sim.heat)) if fire else (("WATER POUCH" + ("   -   FREE HERE (water or ice is close)" if sim.near_water else "")) if water else "CHI")
 	chi_bar.modulate = (Color(1.0, 0.3, 0.15) if (sim.overheat_t > 0.0 or sim.heat >= 90.0) else (Color(1.0, 0.6, 0.2) if sim.is_hot() else Color(1.0, 0.8, 0.4))) if fire else (Color(0.45, 0.78, 1.0) if water else Color(1, 1, 1))
 	element_label.text = etxt
@@ -951,8 +964,8 @@ func _update_hud(dt: float) -> void:
 				else "LMB whip / hold bullets   hold Space over water: propel   RMB heal   %s ice shards   %s ice wall, again near it: discs   %s ice skate   %s freeze%s   hold %s gather   %s tap octopus / hold wave" \
 				% [Settings.key_name("ability_z"), ke, kq, Settings.key_name("ability_freeze"), " (ON)" if sim.freezing else "", Settings.key_name("ability_f"), Settings.key_name("ultimate")])
 	else:
-		hints_label.text = ("LMB punch / hold flame jet   RMB whip   %s dash   %s fire ring   %s arcs   %s combustion beam   tap X dragon rush / hold X lightning (2 s)" 				% [Settings.key_name("ability_q"), Settings.key_name("ability_f"), Settings.key_name("ability_z"), Settings.key_name("ability_freeze")]) if fire else ("LMB rock/wave  RMB boulder  Z barrage  Q skate  E wall  G grab  F pillar  V armor  hold Space at wall: elevator  X ult   (carrying a wall: LMB throws it)" if earth \
-				else "LMB punch / hold blast   RMB slice   E shield   F suction   Q scooter   X ultimate")
+		hints_label.text = ("LMB small fireball / hold + release big fireball   RMB flame burst   %s fire kick   %s fire ring   tap X dragon rush / hold X lightning (2 s)" 				% [Settings.key_name("ability_z"), Settings.key_name("ability_f")]) if fire else ("LMB rock/wave  RMB boulder  Z barrage  Q skate  E wall  G grab  F pillar  V armor  hold Space at wall: elevator  X ult   (carrying a wall: LMB throws it)" if earth \
+				else "LMB punch / hold blast   RMB slice   E shield   F suction   Q scooter   %s air dash (look up to climb)   X ultimate" % Settings.key_name("ability_z"))
 	if sim.octo_t > 0.0:
 		ult_label.text = "OCTOPUS FORM"
 		ult_label.modulate = Color(0.6, 0.85, 1.0, 0.9)

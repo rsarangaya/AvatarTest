@@ -13,5 +13,7 @@
 | V1 | Visual round: tonemap/sky, terrain grain, earth flank jitter, rounded rigs, rock and ice meshes | developer | review | main.gd, terrain_view.gd, terrain.gd, rig.gd, fx.gd |
 | V2 | Tidal wave ignores ring guard check | developer | review | tests/fire_test.gd |
 | V3 | 3D main-menu backdrop (4 benders, poses, tiny fx, Low = static) | developer | review | scripts/menu_bg.gd, menu.gd, tests/menu_smoke.gd, tests/menu_bg_perf.gd |
+| R1 | Round 2: heat visuals + cheap visuals for all nations, projectile node pool, combos (one per nation), kill momentum (per-mode table), burn, lightning chain + bolt duel, swept flame pellets | developer | review | scripts/config.gd, player_sim.gd, world.gd, bender_ai.gd, fx.gd, main.gd, moveset.gd, tests/combo_test.gd, tests/fire_test.gd |
 
 Status: todo | doing | review | done | blocked
+| F8 | Fire rework: small/big fireball, flame burst, fire kick, shorter Dragon Rush, combustion/arcs/whip/jet/fire dash removed; air dash on Z; bots, text, tests | developer | review | scripts/config.gd, player_sim.gd, world.gd, fx.gd, bender_ai.gd, main.gd, moveset.gd, settings.gd, tests/*.gd |

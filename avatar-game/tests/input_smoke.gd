@@ -237,6 +237,24 @@ func _initialize() -> void:
 	ok(sim.barrage_cd > 0.0, "the new key (J) fires it")
 	Settings.rebind("ability_z", KEY_Z)
 
+	# Z is the air dash for an airbender (new binding) and the fire kick for a firebender
+	sim.set_nation("air")
+	sim.chi = 160.0
+	sim.dash_cd = 0.0
+	sim.dash_air_used = false
+	key(KEY_Z, true)
+	key(KEY_Z, false)
+	await wait(0.05)
+	ok(sim.dash_cd > 0.0 and sim.chi < 160.0, "Z fires the air dash through the real input path")
+	await wait(0.5)
+	sim.set_nation("fire")
+	sim.dash_cd = 0.0
+	key(KEY_Z, true)
+	key(KEY_Z, false)
+	await wait(0.05)
+	ok(sim.dash_cd > 0.0, "Z throws the fire kick through the real input path")
+	await wait(0.5)
+
 	# the hidden debug code: up up down down left right left right B A
 	ok(not Settings.debug_enabled and not sim.debug_god, "debug mode is off at the start")
 	for code in [KEY_UP, KEY_UP, KEY_DOWN, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_LEFT, KEY_RIGHT, KEY_B, KEY_A]:

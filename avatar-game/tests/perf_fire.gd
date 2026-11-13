@@ -33,7 +33,7 @@ func _initialize() -> void:
 	main._capture(true)
 	main.overlay.visible = false
 	await _measure("fire: standing still", 3.0, func(): pass)
-	await _measure("flame jet held", 4.0, func():
+	await _measure("big fireball held", 4.0, func():
 		main.inp.fire_held = true
 		sim.yaw += 0.02)
 	main.inp.fire_held = false

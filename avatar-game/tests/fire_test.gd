@@ -57,6 +57,7 @@ func count_proj(w, kind: String) -> int:
 # A world with no bots and a firebender standing on the start meadow, facing -Z (yaw 0).
 func fresh() -> Array:
 	var w := WorldScript.new(1337)
+	w.burn_chance = 0.0
 	w.bots.clear()
 	var p := SimScript.new(w)
 	p.set_nation("fire")
@@ -81,6 +82,25 @@ func dummy(w, p, dist: float, hp := 450.0):
 	return b
 
 
+# Hold LMB for `secs` seconds, then let go (the release step fires the big fireball).
+func hold_release(p, secs: float) -> void:
+	var a := ip()
+	a.fire_pressed = true
+	a.fire_held = true
+	p.step(TICK, a)
+	run(p, int(secs / TICK), func():
+		var h := ip()
+		h.fire_held = true
+		return h)
+	p.step(TICK, ip())
+
+
+func press(p, field: String) -> void:
+	var a := ip()
+	a.set(field, true)
+	p.step(TICK, a)
+
+
 func tap_fire(p) -> void:
 	var a := ip()
 	a.fire_pressed = true
@@ -99,7 +119,8 @@ func _init() -> void:
 	test_ring()
 	test_lightning()
 	test_rush_and_ult()
-	test_freeze_and_dash()
+	test_freeze_and_kick()
+	test_air_dash()
 	test_debug()
 	test_bots()
 	test_text()
@@ -109,102 +130,124 @@ func _init() -> void:
 
 
 func test_moves() -> void:
-	# LMB tap: fire punch
+	# LMB tap: small fireball, long range, fast rate
 	var f := fresh()
 	var w = f[0]
 	var p = f[1]
 	ok(p.element == "fire" and p.chi_cap() == C.HEAT_MAX, "the nation is fire and its bar is the heat meter")
 	var b = dummy(w, p, 6.0)
 	tap_fire(p)
-	ok(has_event(p, "fpunch") and count_proj(w, "fpunch") == 1, "LMB tap fires a fire punch")
+	ok(has_event(p, "fpunch") and count_proj(w, "fpunch") == 1, "LMB tap fires a small fireball")
 	for i in range(120):
 		p.step(TICK, ip())
-	ok(b.hp < b.max_hp and absf((b.max_hp - b.hp) - C.FPUNCH_DAMAGE) < 0.5, "the punch hits for %.0f (%.1f)" % [C.FPUNCH_DAMAGE, b.max_hp - b.hp])
+	ok(b.hp < b.max_hp and absf((b.max_hp - b.hp) - C.FPUNCH_DAMAGE) < 0.5, "the small fireball hits for %.0f (%.1f)" % [C.FPUNCH_DAMAGE, b.max_hp - b.hp])
 	ok(p.heat > 0.0, "attacking adds heat")
-
-	# LMB hold: flame jet
+	var dps: float = C.FPUNCH_DAMAGE / C.FPUNCH_COOLDOWN
+	ok(dps >= 40.0 and dps * C.HOT_MULT <= 55.0, "spam DPS stays in the 40-55 band (%.1f, %.1f hot)" % [dps, dps * C.HOT_MULT])
+	ok(C.FPUNCH_SPEED * C.FPUNCH_LIFE >= 20.0, "the small fireball reaches %.0f m" % (C.FPUNCH_SPEED * C.FPUNCH_LIFE))
 	f = fresh()
 	w = f[0]
 	p = f[1]
-	b = dummy(w, p, 4.0)
+	b = dummy(w, p, 19.0)
+	tap_fire(p)
+	idle(p, 1.0)
+	ok(b.hp < b.max_hp, "it still hits at 19 m")
+	# the fire rate is fast: a second tap right after the cooldown fires again
+	f = fresh()
+	w = f[0]
+	p = f[1]
+	tap_fire(p)
+	idle(p, C.FPUNCH_COOLDOWN + 0.02)
+	tap_fire(p)
+	ok(count_proj(w, "fpunch") == 2, "a second tap after %.2f s fires again" % C.FPUNCH_COOLDOWN)
+
+	# LMB hold, let go: big fireball (slower, hotter, splash)
+	f = fresh()
+	w = f[0]
+	p = f[1]
+	b = dummy(w, p, 8.0)
+	var side = dummy(w, p, 8.0)
+	side.pos.x += 2.2
+	side.pos.y = w.height_at(side.pos.x, side.pos.z)
 	var a := ip()
 	a.fire_pressed = true
 	a.fire_held = true
 	p.step(TICK, a)
-	run(p, int(1.0 / TICK), func():
+	run(p, int(0.4 / TICK), func():
 		var h := ip()
 		h.fire_held = true
 		return h)
-	ok(p.flaming, "holding LMB runs the flame jet")
-	var dealt: float = b.max_hp - b.hp
-	ok(dealt > 24.0 and dealt < 50.0, "the jet burns about %.0f DPS (%.1f in 0.78 s of flame, with range falloff)" % [C.FLAME_DPS, dealt])
-	ok(b.stun <= 0.0, "the flame jet does not stun-lock")
+	ok(p.fcharging and count_proj(w, "fbig") == 0 and p.state_name() == "FIREBALL", "holding LMB winds up the big fireball (no flame jet any more)")
 	p.step(TICK, ip())
-	ok(not p.flaming, "letting go stops the jet")
-	# range: 12 m away is not burnt
+	ok(has_event(p, "fbig") and count_proj(w, "fbig") == 1 and not p.fcharging, "letting go throws it")
+	p.events.clear()
+	hold_release(p, 0.3)
+	ok(not has_event(p, "fbig") and p.fbig_cd > 0.0, "the big fireball has a cooldown (%.1f s), it cannot be spammed" % C.FBIG_COOLDOWN)
+	idle(p, 1.0)
+	var dd: float = b.max_hp - b.hp
+	var ds: float = side.max_hp - side.hp
+	ok(absf(dd - C.FBIG_DAMAGE) < 0.5, "the big fireball hits for %.0f (%.1f)" % [C.FBIG_DAMAGE, dd])
+	ok(ds > 1.0 and ds < C.FBIG_SPLASH_DAMAGE + 0.1 and has_wevent(w, "fbig_burst"), "and bursts for splash damage on a bystander (%.1f)" % ds)
+	ok(C.FBIG_DAMAGE < 40.0 and C.FBIG_SPLASH <= 3.0, "modest damage and area")
+	ok(C.FBIG_HEAT > C.FPUNCH_HEAT * 3.0 and C.FBIG_COOLDOWN > C.FPUNCH_COOLDOWN * 3.0, "it is slower and costs more heat (%.0f)" % C.FBIG_HEAT)
+	ok(C.FBIG_DAMAGE / C.FBIG_COOLDOWN < C.FPUNCH_DAMAGE / C.FPUNCH_COOLDOWN, "its direct DPS is below the small fireballs (%.0f vs %.0f)" % [C.FBIG_DAMAGE / C.FBIG_COOLDOWN, C.FPUNCH_DAMAGE / C.FPUNCH_COOLDOWN])
+	# RMB: flame burst (a shotgun)
 	f = fresh()
 	w = f[0]
 	p = f[1]
-	b = dummy(w, p, 12.0)
-	a = ip()
-	a.fire_pressed = true
-	a.fire_held = true
-	p.step(TICK, a)
-	run(p, 120, func():
-		var h := ip()
-		h.fire_held = true
-		return h)
-	ok(b.hp == b.max_hp, "the jet only reaches about %.0f m" % C.FLAME_RANGE)
-
-	# RMB: fire whip
+	b = dummy(w, p, 2.5)
+	press(p, "slice_pressed")
+	ok(has_event(p, "fburst") and count_proj(w, "fpellet") == C.FBURST_PELLETS, "RMB fires %d pellets" % C.FBURST_PELLETS)
+	idle(p, 0.5)
+	var near: float = b.max_hp - b.hp
+	ok(near >= C.FBURST_DAMAGE * float(C.FBURST_PELLETS) * 0.6 and near <= C.FBURST_DAMAGE * float(C.FBURST_PELLETS) + 0.1, "point blank it is strong (%.0f of %.0f)" % [near, C.FBURST_DAMAGE * float(C.FBURST_PELLETS)])
+	ok(p.heat >= C.FBURST_HEAT - 0.1, "and it heats you")
+	press(p, "slice_pressed")
+	ok(count_proj(w, "fpellet") == 0, "the burst has a short cooldown (%.2f s)" % C.FBURST_COOLDOWN)
 	f = fresh()
 	w = f[0]
 	p = f[1]
-	b = dummy(w, p, 4.0)
-	a = ip()
-	a.slice_pressed = true
-	p.step(TICK, a)
-	ok(has_event(p, "fwhip") and absf((b.max_hp - b.hp) - C.FWHIP_DAMAGE) < 0.5, "RMB whips for %.0f at 4 m" % C.FWHIP_DAMAGE)
-	var hp1: float = b.hp
-	a = ip()
-	a.slice_pressed = true
-	p.step(TICK, a)
-	ok(b.hp == hp1, "the whip has a cooldown")
-	f = fresh()
-	w = f[0]
-	p = f[1]
-	b = dummy(w, p, 9.0)
-	a = ip()
-	a.slice_pressed = true
-	p.step(TICK, a)
-	ok(b.hp == b.max_hp, "the whip reaches only %.0f m" % C.FWHIP_REACH)
-
-	# Z: flame arcs
-	f = fresh()
-	w = f[0]
-	p = f[1]
-	b = dummy(w, p, 12.0)
-	a = ip()
-	a.barrage_pressed = true
-	p.step(TICK, a)
-	ok(has_event(p, "farcs") and count_proj(w, "farc") == C.FARC_COUNT, "Z throws %d flame arcs" % C.FARC_COUNT)
-	for i in range(100):
-		p.step(TICK, ip())
-	ok(b.hp < b.max_hp and b.max_hp - b.hp <= C.FARC_DAMAGE * float(C.FARC_COUNT) + 0.1, "arcs hurt (%.0f)" % (b.max_hp - b.hp))
-
-	# T: combustion beam, the blast comes later
+	b = dummy(w, p, 8.5)
+	press(p, "slice_pressed")
+	idle(p, 0.6)
+	var far: float = b.max_hp - b.hp
+	ok(far < near * 0.5, "it falls off with distance (%.1f at 8.5 m vs %.1f point blank)" % [far, near])
 	f = fresh()
 	w = f[0]
 	p = f[1]
 	b = dummy(w, p, 14.0)
-	a = ip()
-	a.freeze_pressed = true
-	p.step(TICK, a)
-	ok(has_event(p, "combust_cast") and count_proj(w, "cbeam") == 1, "T fires the combustion beam")
-	run(p, 40, func(): return ip())
-	ok(b.hp == b.max_hp and has_wevent(w, "combust_arm"), "the beam lands, the blast is still to come")
-	idle(p, 1.0)
-	ok(absf((b.max_hp - b.hp) - C.COMBUST_DAMAGE) < 12.0 and b.max_hp - b.hp >= C.COMBUST_DAMAGE * 0.6, "the blast hits about %.0f later (%.1f)" % [C.COMBUST_DAMAGE, b.max_hp - b.hp])
+	press(p, "slice_pressed")
+	idle(p, 0.8)
+	ok(b.hp == b.max_hp, "and does not reach 14 m")
+
+	# Z: fire kick (a lunge, then an axe kick)
+	f = fresh()
+	w = f[0]
+	p = f[1]
+	b = dummy(w, p, 6.0)
+	var behind = dummy(w, p, -3.0)
+	var z0: float = p.pos.z
+	press(p, "barrage_pressed")
+	ok(has_event(p, "fkick") and p.dash_t > 0.0 and p.state_name() == "FIRE KICK", "Z lunges into a fire kick")
+	idle(p, 0.4)
+	var moved: float = absf(p.pos.z - z0)
+	ok(moved > C.FKICK_LUNGE_DIST * 0.7 and moved < C.FKICK_LUNGE_DIST * 1.4, "the lunge covers a few metres (%.1f)" % moved)
+	ok(has_event(p, "fkick_hit") and absf((b.max_hp - b.hp) - C.FKICK_DAMAGE) < 0.5, "the kick hits for %.0f (%.1f)" % [C.FKICK_DAMAGE, b.max_hp - b.hp])
+	ok(b.stun >= C.FKICK_STUN - 0.5 or b.vel.length() > 3.0, "it knocks the enemy down / back")
+	ok(behind.hp == behind.max_hp, "an enemy behind you is not hit")
+	ok(p.speed() <= C.FKICK_EXIT_SPEED + 1.0, "you leave the lunge at a capped speed (%.1f)" % p.speed())
+	ok(p.dash_cd > 0.0 and p.heat >= C.FKICK_HEAT - 0.1, "it has a cooldown and heats you")
+	var zb: float = p.pos.z
+	press(p, "barrage_pressed")
+	idle(p, 0.4)
+	ok(absf(p.pos.z - zb) < 1.0, "no second kick during the cooldown")
+	# no kick while swimming
+	f = fresh()
+	w = f[0]
+	p = f[1]
+	p.swimming = true
+	p._try_fkick()
+	ok(p.dash_t <= 0.0 and not has_event(p, "fkick"), "no kick while swimming")
 
 
 func test_heat() -> void:
@@ -227,10 +270,9 @@ func test_heat() -> void:
 	p.heat = 75.0
 	p.heat_idle = 0.0
 	ok(p.is_hot(), "above 70% heat you are hot")
-	var a := ip()
-	a.slice_pressed = true
-	p.step(TICK, a)
-	ok(absf((b.max_hp - b.hp) - C.FWHIP_DAMAGE * C.HOT_MULT) < 0.5, "hot whip does +20%% (%.1f)" % (b.max_hp - b.hp))
+	tap_fire(p)
+	idle(p, 0.4)
+	ok(absf((b.max_hp - b.hp) - C.FPUNCH_DAMAGE * C.HOT_MULT) < 0.5, "a hot fireball does +20%% (%.1f)" % (b.max_hp - b.hp))
 
 	# overheat at 100%: no moves for 2 s, slow, then 50%
 	f = fresh()
@@ -244,13 +286,9 @@ func test_heat() -> void:
 	p.step(TICK, ip())
 	ok(p.overheat_t > 0.0 and has_event(p, "overheat"), "100% heat overheats")
 	var hp0: float = b.hp
-	a = ip()
-	a.slice_pressed = true
-	p.step(TICK, a)
-	a = ip()
-	a.barrage_pressed = true
-	p.step(TICK, a)
-	ok(b.hp == hp0 and count_proj(w, "farc") == 0, "no moves while overheated")
+	press(p, "slice_pressed")
+	press(p, "barrage_pressed")
+	ok(b.hp == hp0 and count_proj(w, "fpellet") == 0 and p.dash_t <= 0.0, "no moves while overheated")
 	var x0: float = p.pos.x
 	var z0: float = p.pos.z
 	run(p, 120, func():
@@ -261,26 +299,25 @@ func test_heat() -> void:
 	ok(slow_d < 5.0 * C.OVERHEAT_MOVE_MULT * 1.2 + 0.5, "overheated you are slow (%.1f m in 1 s)" % slow_d)
 	idle(p, 1.2)
 	ok(p.overheat_t <= 0.0 and absf(p.heat - C.OVERHEAT_RESET) < 8.0, "after 2 s it ends and heat is about %.0f (%.1f)" % [C.OVERHEAT_RESET, p.heat])
-	a = ip()
-	a.slice_pressed = true
-	p.step(TICK, a)
+	press(p, "slice_pressed")
+	idle(p, 0.4)
 	ok(b.hp < hp0, "moves work again")
 
-	# sustained flame jet overheats in a bounded time
+	# spamming small fireballs overheats in a bounded time
 	f = fresh()
 	w = f[0]
 	p = f[1]
-	a = ip()
-	a.fire_pressed = true
-	a.fire_held = true
-	p.step(TICK, a)
 	var t := 0.0
-	while p.overheat_t <= 0.0 and t < 12.0:
+	var n := 0
+	while p.overheat_t <= 0.0 and t < 14.0:
 		var h := ip()
-		h.fire_held = true
+		if n % 24 == 0:
+			h.fire_pressed = true
+			h.fire_held = true
 		p.step(TICK, h)
 		t += TICK
-	ok(p.overheat_t > 0.0 and t < 9.0, "holding the jet overheats in %.1f s" % t)
+		n += 1
+	ok(p.overheat_t > 0.0 and t < 9.0 and t > 4.0, "spamming fireballs overheats in %.1f s" % t)
 
 	# water: standing in water cools you fast and soaks you
 	f = fresh()
@@ -304,10 +341,9 @@ func test_heat() -> void:
 	b = dummy(w, p, 4.0, 5.0)
 	p.heat = 60.0
 	p.heat_idle = 0.0
-	a = ip()
-	a.slice_pressed = true
-	p.step(TICK, a)
-	ok(not b.alive and p.heat < 60.0 + C.FWHIP_HEAT - C.HEAT_KILL_DROP + 3.0, "a kill cools you down (%.1f)" % p.heat)
+	tap_fire(p)
+	idle(p, 0.4)
+	ok(not b.alive and p.heat < 60.0 + C.FPUNCH_HEAT - C.HEAT_KILL_DROP + 3.0, "a kill cools you down (%.1f)" % p.heat)
 
 
 func test_ring() -> void:
@@ -542,28 +578,43 @@ func test_rush_and_ult() -> void:
 	ok(burnt > 0.0, "flying through an enemy burns it (%.0f)" % burnt)
 	# no free ult meter from the rush's own damage
 	ok(p.ult < 1.0, "the rush's own hits do not refill the meter (%.1f)" % p.ult)
-	# duration and DPS are bounded
-	idle(p, C.RUSH_TIME)
-	ok(p.rush_t <= 0.0 and has_event(p, "rush_end") or p.rush_t <= 0.0, "it ends after about %.0f s" % C.RUSH_TIME)
-	ok(C.RUSH_DPS * C.RUSH_TIME <= 520.0, "potential damage is bounded (%.0f)" % (C.RUSH_DPS * C.RUSH_TIME))
+	# duration and DPS are bounded: the rush is at least 40% shorter than the old 9 s and hits for less
+	ok(C.RUSH_TIME <= 9.0 * 0.62 and C.RUSH_TIME >= 4.0, "the rush is much shorter (%.1f s, was 9)" % C.RUSH_TIME)
+	ok(C.RUSH_DPS <= 50.0 and C.RUSH_DPS * C.RUSH_TIME <= 260.0, "and weaker: at most %.0f damage in total (was 495)" % (C.RUSH_DPS * C.RUSH_TIME))
+	ok(p.rush_t > 0.0 and p.rush_t < C.RUSH_TIME - 0.9, "(the timer is running: %.1f s left)" % p.rush_t)
+	var rt := 0.0
+	while p.rush_t > 0.0 and rt < 12.0:
+		p.step(TICK, ip())
+		rt += TICK
+	ok(p.rush_t <= 0.0 and has_event(p, "rush_end") and rt <= C.RUSH_TIME, "it ends on its own after about %.1f s (%.1f more s here)" % [C.RUSH_TIME, rt])
 	# immune to clashes: ultimate kinds are not in the table, and a rush is no projectile
 	ok(not C.PROJ_TOUGHNESS.has("rush") and not C.PROJ_TOUGHNESS.has("lightning"), "ultimates have no toughness entry")
-	for k in ["fpunch", "farc", "cbeam"]:
+	for k in ["fpunch", "fpellet", "fbig"]:
 		ok(C.PROJ_TOUGHNESS.has(k), "%s is in the toughness table (%d)" % [k, C.PROJ_TOUGHNESS.get(k, 0)])
-	ok(C.PROJ_TOUGHNESS["fpunch"] == 1 and C.PROJ_TOUGHNESS["farc"] == 2 and C.PROJ_TOUGHNESS["cbeam"] == 3, "punch 1, arcs 2, beam 3")
+	ok(C.PROJ_TOUGHNESS["fpunch"] == 1 and C.PROJ_TOUGHNESS["fpellet"] == 1 and C.PROJ_TOUGHNESS["fbig"] == 2, "small fireball 1, pellet 1, big fireball 2")
+	ok(not C.PROJ_TOUGHNESS.has("farc") and not C.PROJ_TOUGHNESS.has("cbeam"), "the removed arcs and beam are gone from the table")
 	# clash behaviour of the fire kinds
 	var w2 := WorldScript.new(1337)
+	w2.burn_chance = 0.0
 	w2.bots.clear()
-	var a1 = w2.spawn_proj("farc", "player", Vector3(0.0, 150.0, 0.0), Vector3(30.0, 0.0, 0.0), 3.0, 0.5, 5.0, 1.0)
+	var a1 = w2.spawn_proj("fbig", "player", Vector3(0.0, 150.0, 0.0), Vector3(30.0, 0.0, 0.0), 3.0, 0.5, 5.0, 1.0)
 	var a2 = w2.spawn_proj("bolt", "enemy", Vector3(20.0, 150.0, 0.0), Vector3(-30.0, 0.0, 0.0), 3.0, 0.5, 5.0, 1.0)
 	var a3 = w2.spawn_proj("lightning", "enemy", Vector3(20.0, 150.0, 1.0), Vector3(-30.0, 0.0, 0.0), 3.0, 0.5, 5.0, 1.0)
 	for i in range(30):
 		w2._update_projectiles(1.0 / 60.0, null)
-	ok(w2.projectiles.has(a1) and not w2.projectiles.has(a2), "a flame arc beats a bolt")
+	ok(w2.projectiles.has(a1) and not w2.projectiles.has(a2), "a big fireball beats a bolt")
 	ok(not w2.projectiles.has(a3) or w2.projectiles.has(a3), "(an unlisted kind is ignored by clashes)")
+	var w3 := WorldScript.new(1337)
+	w3.burn_chance = 0.0
+	w3.bots.clear()
+	var s1 = w3.spawn_proj("fpunch", "player", Vector3(0.0, 150.0, 0.0), Vector3(30.0, 0.0, 0.0), 3.0, 0.5, 5.0, 1.0)
+	var s2 = w3.spawn_proj("fbig", "enemy", Vector3(20.0, 150.0, 0.0), Vector3(-30.0, 0.0, 0.0), 3.0, 0.5, 5.0, 1.0)
+	for i in range(30):
+		w3._update_projectiles(1.0 / 60.0, null)
+	ok(not w3.projectiles.has(s1) and w3.projectiles.has(s2), "a small fireball is burnt up by a big one")
 
 
-func test_freeze_and_dash() -> void:
+func test_freeze_and_kick() -> void:
 	var f := fresh()
 	var w = f[0]
 	var p = f[1]
@@ -580,69 +631,32 @@ func test_freeze_and_dash() -> void:
 		w.update_combat(TICK, null)
 	ok(fb.frozen_t <= 0.0 and has_wevent(w, "unfreeze"), "the firebender is free after half a second")
 
-	# dash: 12 m in a moment
+	# the old fire dash (Q) is gone for fire: Q does nothing
 	f = fresh()
 	w = f[0]
 	p = f[1]
-	var z0: float = p.pos.z
-	var a := ip()
-	a.scooter_pressed = true
-	p.step(TICK, a)
-	ok(has_event(p, "fdash") and p.dash_t > 0.0, "Q dashes")
+	var zq: float = p.pos.z
+	press(p, "scooter_pressed")
 	idle(p, 0.3)
-	var d: float = absf(p.pos.z - z0)
-	ok(d > 10.0 and d < 15.0, "the dash covers about %.0f m (%.1f)" % [C.FDASH_DIST, d])
-	ok(p.speed() <= C.FDASH_EXIT_SPEED + 1.0, "and you leave it at a walk-sprint speed (%.1f)" % p.speed())
-	# ground cooldown
-	a = ip()
-	a.scooter_pressed = true
-	var zb: float = p.pos.z
-	p.step(TICK, a)
-	idle(p, 0.3)
-	ok(absf(p.pos.z - zb) < 3.0, "the dash has a cooldown")
-	# hot: further
-	f = fresh()
-	w = f[0]
-	p = f[1]
-	p.heat = 80.0
-	p.heat_idle = 0.0
-	z0 = p.pos.z
-	a = ip()
-	a.scooter_pressed = true
-	p.step(TICK, a)
-	idle(p, 0.3)
-	ok(absf(p.pos.z - z0) > d + 1.0, "hot, the dash goes further (%.1f)" % absf(p.pos.z - z0))
-	# one dash in the air per landing
+	ok(p.dash_t <= 0.0 and absf(p.pos.z - zq) < 0.5 and not p.scooter, "Q does nothing for a firebender now")
+	# an air kick uses the one dash per landing
 	f = fresh()
 	w = f[0]
 	p = f[1]
 	p.pos.y += 25.0
 	p.on_ground = false
 	p.vel = Vector3.ZERO
+	press(p, "barrage_pressed")
+	ok(p.dash_t > 0.0 and p.dash_air_used, "an air kick works once")
+	idle(p, 0.3)
 	p.dash_cd = 0.0
-	a = ip()
-	a.scooter_pressed = true
-	p.step(TICK, a)
-	ok(p.dash_t > 0.0 and p.dash_air_used, "an air dash works once")
-	idle(p, 0.2)
-	p.dash_cd = 0.0
-	a = ip()
-	a.scooter_pressed = true
-	p.step(TICK, a)
-	ok(p.dash_t <= 0.0, "a second dash in the same air time is refused")
-	# land, then it works again
+	press(p, "barrage_pressed")
+	ok(p.dash_t <= 0.0, "a second kick in the same air time is refused")
 	var guard := 0
 	while not p.on_ground and guard < 3000:
 		p.step(TICK, ip())
 		guard += 1
-	ok(p.on_ground and not p.dash_air_used, "landing re-arms the air dash")
-	p.dash_cd = 0.0
-	a = ip()
-	a.scooter_pressed = true
-	p.step(TICK, a)
-	ok(p.dash_t > 0.0, "and it dashes again")
-	# below airbender mobility: a dash chain is slower than an airbender's gust chain climb
-	ok(C.FDASH_DIST / C.FDASH_COOLDOWN < C.SCOOTER_SPEED, "dash average speed %.1f m/s is below the scooter (%.0f)" % [C.FDASH_DIST / C.FDASH_COOLDOWN, C.SCOOTER_SPEED])
+	ok(p.on_ground and not p.dash_air_used, "landing re-arms it")
 
 
 func test_debug() -> void:
@@ -652,20 +666,20 @@ func test_debug() -> void:
 	p.debug_nocd = true
 	p.debug_god = true
 	var a := ip()
-	a.scooter_pressed = true
+	a.barrage_pressed = true
 	p.step(TICK, a)
-	idle(p, 0.3)
+	idle(p, 0.4)
 	a = ip()
-	a.scooter_pressed = true
+	a.barrage_pressed = true
 	p.step(TICK, a)
-	ok(p.dash_t > 0.0, "debug: no dash cooldown")
-	a = ip()
-	a.fire_pressed = true
-	a.fire_held = true
-	p.step(TICK, a)
+	ok(p.dash_t > 0.0, "debug: no kick cooldown")
+	var dn := [0]
 	run(p, int(12.0 / TICK), func():
 		var h := ip()
-		h.fire_held = true
+		dn[0] += 1
+		if dn[0] % 24 == 0:
+			h.fire_pressed = true
+			h.fire_held = true
 		return h)
 	ok(p.overheat_t <= 0.0 and p.heat < 5.0, "debug: no overheat, ever (%.1f)" % p.heat)
 	ok(p.ult_ready(), "debug: the ultimate is always full")
@@ -674,6 +688,7 @@ func test_debug() -> void:
 func test_bots() -> void:
 	# a fire duelist and fire bender bots run their kit without errors, stay sane, back off when hot
 	var w := WorldScript.new(1337)
+	w.burn_chance = 0.0
 	var p := SimScript.new(w)
 	p.set_nation("air")
 	w.duel_nation = "fire"
@@ -699,11 +714,12 @@ func test_bots() -> void:
 			boss.ult_charge = 1.0
 	ok(is_finite(boss.pos.x) and boss.alive, "a minute of the fire duelist stays sane")
 	ok(seen.has("bot_cast"), "the fire duelist casts")
-	ok(seen.has("bot_flame") or seen.has("bot_whip") or seen.has("combust") or seen.has("fire_ring"), "it uses flames, whips, combustion or the ring (%s)" % ", ".join(seen.keys()))
+	ok(seen.has("bot_kick") or seen.has("fire_ring") or seen.has("proj_hit") or seen.has("bot_cast"), "it uses its kit (%s)" % ", ".join(seen.keys()))
 	ok(seen.has("bot_charge") and seen.has("lightning"), "it telegraphs and fires lightning")
 	ok(max_heat <= C.HEAT_MAX + 0.01, "its heat stays within the meter (%.0f)" % max_heat)
 	# bender grunts
 	var w2 := WorldScript.new(1337)
+	w2.burn_chance = 0.0
 	w2.bot_nation = "fire"
 	w2.set_bot_mode("benders", "air")
 	var p2 := SimScript.new(w2)
@@ -724,7 +740,106 @@ func test_bots() -> void:
 	ok(is_finite(p2.pos.x), "20 s among fire bots stays sane")
 
 
+func test_air_dash() -> void:
+	# an airbender's Z: a 3D dash along the look direction
+	var w := WorldScript.new(1337)
+	w.burn_chance = 0.0
+	w.bots.clear()
+	var p := SimScript.new(w)
+	p.set_nation("air")
+	p.respawn()
+	p.yaw = 0.0
+	idle(p, 0.6)
+	var chi0: float = p.chi
+	var z0: float = p.pos.z
+	var y0: float = p.pos.y
+	press(p, "barrage_pressed")
+	ok(has_event(p, "adash") and p.dash_t > 0.0 and p.state_name() == "AIR DASH", "Z air dashes for an airbender")
+	ok(p.chi <= chi0 - C.ADASH_COST + 1.0, "it costs chi (%.0f -> %.0f)" % [chi0, p.chi])
+	var left := 0
+	while p.dash_t > 0.0 and left < 200:
+		p.step(TICK, ip())
+		left += 1
+	ok(p.vel.length() <= C.ADASH_EXIT_SPEED + 0.5, "it ends at a capped speed (%.1f m/s)" % p.vel.length())
+	var d: float = absf(p.pos.z - z0)
+	ok(d > C.ADASH_DIST * 0.75 and d < C.ADASH_DIST * 1.1 and absf(p.pos.y - y0) < 1.0, "looking level it goes about %.0f m forward (%.1f)" % [C.ADASH_DIST, d])
+	ok(not p.dash_air_used, "a dash from the ground does not use the air dash")
+	press(p, "barrage_pressed")
+	ok(p.dash_t <= 0.0, "short cooldown (%.1f s): refused right after" % C.ADASH_COOLDOWN)
+	idle(p, C.ADASH_COOLDOWN + 0.1)
+	p.chi = C.ADASH_COST - 1.0
+	p.chi_delay = 10.0
+	press(p, "barrage_pressed")
+	ok(p.dash_t <= 0.0, "not without enough chi")
+
+	# looking up: it climbs
+	w = WorldScript.new(1337)
+	w.burn_chance = 0.0
+	w.bots.clear()
+	p = SimScript.new(w)
+	p.set_nation("air")
+	p.respawn()
+	p.yaw = 0.0
+	p.pitch = deg_to_rad(50.0)
+	idle(p, 0.6)
+	p.pos.y += 20.0
+	p.on_ground = false
+	p.vel = Vector3.ZERO
+	y0 = p.pos.y
+	press(p, "barrage_pressed")
+	ok(p.dash_t > 0.0 and p.dash_air_used, "an air dash in the air works and uses the air dash")
+	left = 0
+	while p.dash_t > 0.0 and left < 200:
+		p.step(TICK, ip())
+		left += 1
+	var up: float = p.pos.y - y0
+	ok(up > C.ADASH_DIST * sin(deg_to_rad(50.0)) * 0.8, "looking up 50 degrees it climbs %.1f m" % up)
+	ok(p.vel.length() <= C.ADASH_EXIT_SPEED + 0.5, "and still ends at the capped speed (%.1f)" % p.vel.length())
+	# one in-air use per landing
+	p.dash_cd = 0.0
+	p.chi = p.chi_cap()
+	press(p, "barrage_pressed")
+	ok(p.dash_t <= 0.0, "a second air dash in the same air time is refused")
+	var guard := 0
+	while not p.on_ground and guard < 6000:
+		p.step(TICK, ip())
+		guard += 1
+	ok(p.on_ground and not p.dash_air_used, "landing re-arms it")
+	p.chi = p.chi_cap()
+	p.dash_cd = 0.0
+	press(p, "barrage_pressed")
+	ok(p.dash_t > 0.0, "and it dashes again")
+
+	# dashing upward from the ground leaves the ground and counts as the one air dash
+	guard = 0
+	while not p.on_ground and guard < 6000:
+		p.step(TICK, ip())
+		guard += 1
+	idle(p, 0.3)
+	p.dash_cd = 0.0
+	p.chi = p.chi_cap()
+	p.pitch = deg_to_rad(40.0)
+	y0 = p.pos.y
+	press(p, "barrage_pressed")
+	left = 0
+	while p.dash_t > 0.0 and left < 200:
+		p.step(TICK, ip())
+		left += 1
+	ok(p.pos.y - y0 > 3.0 and p.dash_air_used, "an upward dash from the ground climbs (%.1f m) and counts as the air dash (used=%s)" % [(p.pos.y - y0), str(p.dash_air_used)])
+	p.dash_cd = 0.0
+	p.chi = p.chi_cap()
+	press(p, "barrage_pressed")
+	ok(p.dash_t <= 0.0, "so no second dash before you land: no free flight")
+	ok(C.ADASH_DIST / C.ADASH_COOLDOWN < C.SCOOTER_SPEED, "its average speed %.1f m/s is below the scooter" % (C.ADASH_DIST / C.ADASH_COOLDOWN))
+
+	# the scooter Q and the other moves are untouched; the other nations' Z is unchanged
+	var t := Moveset.rich_text("air")
+	ok(t.contains("AIR DASH") and t.contains("AIR SCOOTER"), "the air tutorial lists the dash and the scooter")
+
+
 func test_text() -> void:
 	var t := Moveset.rich_text("fire")
-	ok(t.contains("FLAME JET") and t.contains("FIRE RING") and t.contains("DRAGON RUSH") and t.contains("LIGHTNING") and t.contains("COMBUSTION"), "the fire tutorial lists the moves")
+	ok(t.contains("SMALL FIREBALLS") and t.contains("BIG FIREBALL") and t.contains("FLAME BURST") and t.contains("FIRE KICK") and t.contains("FIRE RING") and t.contains("DRAGON RUSH") and t.contains("LIGHTNING"), "the fire tutorial lists the new moves")
+	ok(not t.contains("COMBUSTION") and not t.contains("FLAME JET") and not t.contains("FIRE DASH") and not t.contains("FLAME ARCS") and not t.contains("FIRE WHIP"), "and none of the removed ones")
+	ok(t.contains("%.1f" % C.RUSH_TIME), "the rush time in the text follows the config (%.1f s)" % C.RUSH_TIME)
 	ok(Session.NATIONS.has("fire") and Session.nation_name("fire") == "FIRE NATION", "the session knows the fire nation")

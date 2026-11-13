@@ -17,10 +17,10 @@ const ACTIONS := [
 	{"id": "ability_q", "label": "Q move: scooter, skate, octopus grab", "key": KEY_Q, "group": "Bending"},
 	{"id": "ability_e", "label": "E move: shield, wall, ice wall, slam (hold)", "key": KEY_E, "group": "Bending"},
 	{"id": "ability_f", "label": "F move: suction, pillar, gather (hold)", "key": KEY_F, "group": "Bending"},
-	{"id": "ability_z", "label": "Z move: stone barrage, ice shards", "key": KEY_Z, "group": "Bending"},
+	{"id": "ability_z", "label": "Z move: stone barrage, ice shards, air dash, fire kick", "key": KEY_Z, "group": "Bending"},
 	{"id": "ability_g", "label": "G move: grab / plant earth wall", "key": KEY_G, "group": "Bending"},
 	{"id": "ability_v", "label": "V move: earth armor", "key": KEY_V, "group": "Bending"},
-	{"id": "ability_freeze", "label": "T move: freeze / unfreeze water (water), combustion beam (fire)", "key": KEY_T, "group": "Bending"},
+	{"id": "ability_freeze", "label": "T move: freeze / unfreeze water (water)", "key": KEY_T, "group": "Bending"},
 	{"id": "ultimate", "label": "Ultimate (tap or hold for water and fire)", "key": KEY_X, "group": "Bending"},
 	{"id": "respawn", "label": "Respawn / reset", "key": KEY_R, "group": "Game"},
 ]

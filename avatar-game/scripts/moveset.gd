@@ -14,6 +14,7 @@ const COMMON := {
 		[["@jump"], "Jump. Jump at a ledge to MANTLE up it. In water, hold it to swim up."],
 		[["Mouse wheel"], "Also jumps."],
 		[["Out of resources"], "Left click = 3-hit melee combo, right click = heavy strike."],
+		[["Kills"], "In the training bot modes (not the duel) a kill gives you MOMENTUM: about 25% more speed for 3 seconds."],
 		[["Esc"], "Pause menu (restart, moves, options, quit)."],
 	],
 }
@@ -30,6 +31,8 @@ const NATIONS := {
 				[["@ability_f"], "Hold: AIR SUCTION. Pulls enemies toward you."],
 				[["@ability_q"], "AIR SCOOTER on / off: ride a ball of air. Hit a steep wall at speed and you run straight up it; jump to kick off."],
 				[["@jump", "(in mid-air)"], "GUST JUMP: a second jump out of thin air. Hold it while falling to GLIDE."],
+				[["@ability_z"], "AIR DASH: a quick burst of {adash_dist} m along where you LOOK, so look up and you shoot upwards. Costs chi, one dash in the air per landing (a dash off the ground counts), a short cooldown."],
+				[["COMBO"], "DASH SLICE: air dash, then an air slice within 1 second hits 80% harder."],
 			]},
 			{"title": "Ultimate", "entries": [
 				[["@ultimate"], "AIR BREATH on the ground: a huge stream of air that shoves everything away. 8 m or more up (jump off a hill): AIR BOMB, a dive that blasts a crater."],
@@ -47,6 +50,7 @@ const NATIONS := {
 				[["Left click"], "Tap: ROCK THROW. Hold: charge an EARTH WAVE, a line of earth that throws enemies into the air."],
 				[["Right click"], "BOULDER: rips a boulder from the ground, a wall or a hill, then throws it."],
 				[["@ability_z"], "STONE BARRAGE: a fan of seven rocks."],
+				[["COMBO"], "QUAKE BOULDER: stone barrage, then start a boulder (right click) within 1 second and the boulder hits 50% harder."],
 				[["@ability_q"], "EARTH SKATE on / off: stride on rising chunks of earth. Steer with the mouse."],
 				[["@jump", "(held at a tall wall)"], "EARTH ELEVATOR: ride a column of rock up a cliff. Hold forward to lean over the top."],
 				[["@ability_e"], "EARTH WALL: big, permanent, blocks bolts."],
@@ -64,19 +68,19 @@ const NATIONS := {
 	},
 	"fire": {
 		"title": "FIRE NATION - fierce, fast and burning hot",
-		"blurb": "No chi: your power is INNER FIRE, the heat bar. Every attack heats it, and above 70% you hit 20% harder and dash further. At 100% you OVERHEAT: no moves for 2 seconds and you are slow. Heat falls only while you are not attacking. Water cools you down fast (and soaked, you cannot use the ring or lightning). Kills cool you too. Short range, no healing, but you melt out of ice in half a second.",
+		"blurb": "No chi: your power is INNER FIRE, the heat bar. Every attack heats it, and above 70% you hit 20% harder. At 100% you OVERHEAT: no moves for 2 seconds and you are slow. Heat falls only while you are not attacking. Water cools you down fast (and soaked, you cannot use the ring or lightning). Kills cool you too. Short range, no healing, but you melt out of ice in half a second.",
 		"sections": [
 			{"title": "Moves", "entries": [
-				[["Left click"], "Tap: FIRE PUNCH, a quick short-range fireball. Hold: FLAME JET, a 7 m cone that burns without stopping (heats fast)."],
-				[["Right click"], "FIRE WHIP: a 6 m lash of flame."],
-				[["@ability_q"], "FIRE DASH: a 12 m burst of speed where you are heading. One dash in the air per landing, a short cooldown on the ground."],
+				[["Left click"], "Tap: SMALL FIREBALLS, fast and long range. Hold, then let go: a BIG FIREBALL that bursts for splash damage. It is slower and heats you more for its damage."],
+				[["Right click"], "FLAME BURST: a spread of fire pellets like a shotgun. Brutal point blank, weak far away, short cooldown, heats you."],
+				[["@ability_z"], "FIRE KICK: you lunge forward a few metres and throw a fiery axe kick: it hurts, knocks enemies down and melts ice walls. Not while swimming. Cooldown."],
+				[["COMBO"], "KICK + BURST: fire kick, then a flame burst within 1 second hits 60% harder (a text and a HUD cue show it)."],
+				[["Burn"], "Every fire hit has a 15% chance to set the target on fire: a few damage per second for 3 seconds. Water or swimming puts it out. It works on you too."],
 				[["@ability_f"], "FIRE RING: a 360 degree burst that burns and throws everything around you back, then a guard for 2 seconds: you take much less damage and every bolt, rock or boulder that flies into it burns up. Your main defense. Water puts it out."],
-				[["@ability_z"], "FLAME ARCS: three crescents of fire (they beat bolts and punches)."],
-				[["@ability_freeze"], "COMBUSTION BEAM: a fast beam, and where it lands the blast comes half a second later. Hurts a lot, melts ice walls."],
 			]},
 			{"title": "Ultimate", "entries": [
 				[["@ultimate", "(tap)"], "DRAGON RUSH for {rush_time} seconds: fly as a jet of fire. Steer with the mouse. Everything near the flame burns. No other moves while it lasts."],
-				[["@ultimate", "(hold)"], "LIGHTNING: hold to charge while you stand focused (slow and open to attack). Let go to fire the bolt where you aim: after 0.8 seconds it does half damage, after 2 seconds full damage (it fires by itself then). Let go sooner and nothing is spent. Stepping into water ends the charge. Earth walls and earth armor stop it; targets standing in water take extra. Nothing can clash with it, and the fire ring guard does not soften ultimates."],
+				[["@ultimate", "(hold)"], "LIGHTNING: hold to charge while you stand focused (slow and open to attack). Let go to fire the bolt where you aim: after 0.8 seconds it does half damage, after 2 seconds full damage (it fires by itself then). Let go sooner and nothing is spent. Stepping into water ends the charge. Earth walls and earth armor stop it; targets standing in water take extra. Nothing can clash with it, and the fire ring guard does not soften ultimates. A full-charge bolt that hits an enemy standing in water chains to up to 3 more enemies in water nearby. If you both charge lightning, whoever fires SECOND throws the first bolt back at the shooter (a bolt aimed at a charging enemy waits a moment for their answer)."],
 			]},
 			{"title": "Tips", "entries": [
 				[["Tip"], "Get close and keep moving. Use the ring when you are hurt or surrounded. Watch the heat bar: stop attacking for a moment before it hits 100%."],
@@ -97,6 +101,7 @@ const NATIONS := {
 				[["Space"], "HOLD in or just above water (or over ice) to PROPEL: a jet of water lifts you steadily, a few metres at most, with a little forward drift. Let go, or leave the water, and you fall. Short rest after each use."],
 				[["Right click"], "HEAL yourself over a moment."],
 				[["@ability_z"], "ICE SHARDS: a tight fan of seven pointed spikes. A close fan hits very hard."],
+				[["COMBO"], "FROST LASH: ice shards, then a water whip (tap left click) within 1 second hits twice as hard."],
 				[["@ability_q"], "ICE SKATE on / off. Needs water or ice nearby. You glide fast over ice and over open water (no swimming). It ends when no water or ice is left near you. It never freezes anything by itself."],
 				[["@ability_freeze"], "FREEZE on / off. While on, the water around and ahead of you turns to ice as you move (skate over it, or walk on it). Press it again to turn it off and thaw the ice around you back into water."],
 				[["@ability_e"], "ICE WALL: takes two hits to break. Used on an enemy about 6 ft in front of you it FREEZES them solid for 3 seconds. Then, standing close to your wall, press it again to throw an ICE DISC: one spinning disc flies from the wall where you aim and cuts through enemies. A wall gives four discs and shrinks with each one; once it has thrown a disc, hits no longer break it."],
@@ -147,7 +152,7 @@ static func _key_text(k: String) -> String:
 
 # Inside a description, [@action] becomes the key that action is bound to.
 static func _text(t: String) -> String:
-	var out := t.replace("{octo_time}", "%d" % int(C.OCTO_TIME)).replace("{rush_time}", "%d" % int(C.RUSH_TIME))
+	var out := t.replace("{octo_time}", "%d" % int(C.OCTO_TIME)).replace("{rush_time}", "%.1f" % C.RUSH_TIME).replace("{adash_dist}", "%d" % int(C.ADASH_DIST))
 	for a in Settings.ACTIONS:
 		out = out.replace("[@%s]" % a["id"], "[color=#ffd86b][lb]%s[rb][/color]" % Settings.key_name(String(a["id"])))
 	return out

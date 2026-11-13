@@ -34,7 +34,29 @@ Enter **Up Up Down Down Left Right Left Right B A** on the menus or in a game (e
 **Melee:** out of chi / water, 3-hit combo on LMB, heavy strike on RMB.
 **World:** 400 m map with sea and rivers, destructible terrain that slowly heals, bots (dummies, benders, a one-on-one duel enemy).
 
-### Fire nation round (2026-11-12, newest)
+### Round 2 (2026-11-12, newest): combos, burn, kill momentum, lightning extras, visuals (`tests/combo_test.gd`, numbers in `config.gd`)
+- **Combos** (opener, then finisher within `COMBO_WINDOW` 1.0 s multiplies the finisher's damage; a floating text, a HUD cue "COMBO! ..." in the element line and the kit cards show it; table `C.COMBOS`):
+  - Fire: fire kick (Z) then flame burst (RMB): pellets x1.6 (KICK + BURST!).
+  - Air: air dash (Z) then air slice (RMB): x1.8 (DASH SLICE!).
+  - Earth: stone barrage (Z) then start a boulder (RMB): boulder x1.5, 55 -> 83 (QUAKE BOULDER!).
+  - Water: ice shards (Z) then a water whip (LMB tap): x2.0, 15 -> 30 (FROST LASH!).
+  Spam DPS is unchanged (the openers are on 2.5-3.5 s cooldowns), so a combo is a moderate burst.
+- **Kill momentum:** a kill gives +25% speed for 3 s. Table `C.MODE_KILL_EFFECTS` (by `world.bot_mode`): `fighters` and `benders` have it, `duel` has none. Other modes add their own entry; the sim reads `world.kill_effect()`.
+- **Burn:** fire hits (small and big fireball, kick; flame-burst pellets at 30% of the chance) have a 15% chance (`BURN_CHANCE`) to burn the target 3 s at 5 DPS. Works on bots and on the player (enemy fireballs and kicks). Water (0.25 m) or swimming puts it out. Small flames on the burning body, "BURNING" text, HUD tag.
+- **Lightning:** (a) a FULL-charge bolt that hits an enemy standing in water chains to up to 3 more enemies in water within 12 m, 60% per jump (`LIGHT_CHAIN_*`). (b) Bolt duel: a bolt aimed at an enemy that has charged lightning for at least 0.8 s waits 0.45 s (`LIGHT_DUEL_WINDOW`); if the target fires in that time the bolt goes back at the first shooter ("BOLTS CLASH!" then "REDIRECTED!"). Bots answer a player bolt at once; a bot bolt at a charging player waits the same way. One duel at a time, a redirected bolt never re-enters it.
+- **Heat visuals:** fire projectiles spawned while HOT (or comboed) are 1.4x bigger with brighter shared materials and leave a puff trail; bigger flame puffs and 10 burst puffs when hot.
+- **Other visual wins (all nations, pooled puffs, no new draw-call sources):** hit sparks/dust in the move's colour on every projectile hit and ground impact, puff trails behind air punch/slice, rocks, boulders and ice discs, a consistent glow where each move leaves the hand, burn flames.
+- **Perf:** projectile nodes are pooled by kind and keyed by int id (no per-frame string, dictionary or queue_free); flame pellets are swept (2 extra point checks) so they cannot tunnel thin walls. Puff pool 56 -> 80 nodes (hidden when unused).
+- Kept on purpose: `apply_kick` still breaks an ice wall twice (a wall has 2 hp: "ice melts in one kick"), the loop is guarded by `ice_walls.is_empty()`.
+
+### Fire nation round (2026-11-12)
+- **Fire rework (2026-11-12, supersedes the LMB/RMB/Q/Z/T lines below)** (`tests/fire_test.gd`, numbers in `config.gd` "Fire nation")
+  - **LMB tap** small fireballs: 8 damage, 0.19 s, 22 m range (about 42 DPS spam, 50 hot), toughness 1, +3 heat. **LMB hold, let go** big fireball: 28 direct + 14 splash within 3 m, 1.1 s cooldown, 22 m, toughness 2, +16 heat (direct DPS 25, below the small ones); you move at 75% while winding up. The flame jet is gone.
+  - **RMB** flame burst: 7 pellets in a fixed fan (half angle 0.16 rad), 6.5 each (45 point blank), falls to 35% at the end of its 9 m flight, 0.85 s, +12 heat, toughness 1. The fire whip is gone.
+  - **Z** fire kick: lunge 4.5 m in 0.2 s, then an axe kick arc (3.4 m, about 63 degrees either side): 28 damage, 10 knockback, 0.9 s knock down, melts ice walls; 3.5 s cooldown, +14 heat; not while swimming; in the air it uses the one dash per landing. **Q** does nothing for fire now. **T** combustion beam and Z flame arcs are removed (config, events, bot use, text, tests).
+  - **Dragon Rush** 9 s -> 5.5 s, 55 -> 45 DPS (at most 248 damage, was 495).
+  - **Airbender AIR DASH on Z**: 9 m in 0.18 s along the look direction including pitch (look up and climb), 22 chi, 2.5 s cooldown, one in the air per landing (a dash that leaves the ground counts), exit speed capped at 10 m/s, cancels glide and scooter. HUD slot added to the air row, rebindable (Z binding label updated).
+  - **Bots:** fire duelist lunges and kicks, flame burst up close, big fireballs at range, ring when hurt, lightning as before; fire grunts throw small fireballs and bursts. Bot flame jet removed.
 - **Fire nation (BUILT 2026-11-12)** (`tests/fire_test.gd`, all numbers in `config.gd` under "Fire nation")
   - **Resource: Inner Fire heat meter** (shown in the chi bar, no chi, no melee fallback). Attacks add heat (punch 4, whip 10, dash 8, arcs 14, ring 18, beam 18, flame jet 14 per second) and damage dealt adds 0.04 per point. Above 70% you are HOT: +20% damage and dash distance. At 100% you OVERHEAT: no moves for 2 s and half speed, then heat 50. Heat falls (12 per second) only after 0.8 s without attacking. Standing in water (0.25 m deep) drops it 45 per second and soaks you for 3 s (no ring, no lightning, no flame jet). A kill lowers it by 25. Debug mode: no heat, no overheat, no cooldowns.
   - **LMB tap** fire punch: 12 damage, 0.28 s, 12 m, toughness 1 (about 43 DPS spam). **LMB hold** flame jet: 45 DPS (54 hot), 7 m cone, burns without stunning, burns up weak enemy bolts, melts ice walls (2 hits at once), overheats in about 7 s of holding.
@@ -127,6 +149,7 @@ All suites passed on the final run (2026-11-12, fire round): fire_test, water_te
 - `sim_test.gd` (230 checks, about 10 min, air + earth + shared), `world_smoke.gd`, `nav_test.gd`.
 - `hud_slot_test.gd` (21): cooldown HUD slots.
 - `projectile_clash_test.gd` (13): projectile clashes and toughness.
+- `combo_test.gd` (46): combos for all four nations, kill momentum per mode, burn, wet lightning chain, bolt duel, pellet sweep.
 - `fire_test.gd`: every fire move, heat / hot / overheat / soak / kill rules, ring guard, lightning charge / cancel / earth wall / armor block, rush, freeze thaw, dash limits, debug mode, fire bots.
 - `perf_fire.gd` (needs a window): frame times with the fire effects; `sim_cost.gd` now also measures fire.
 - Helpers: `damage_table.gd` (every move's damage per second), `probe_water.gd` (water share and duel pads), `perf_probe.gd`, `sim_cost.gd`, `chunk_cost.gd`.
