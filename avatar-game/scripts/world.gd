@@ -1108,7 +1108,7 @@ func update_combat(dt: float, player) -> void:
 		if taken > 0.0:
 			for b in bots:
 				if b.boss:
-					b.ult_charge = minf(1.0, b.ult_charge + taken / C.BOT_ULT_DAMAGE)
+					b.ult_charge = minf(1.0, b.ult_charge + taken / float(_duel_tune["ult_damage"]))
 
 
 func _bot_collide(b: Bot) -> void:
@@ -2091,6 +2091,8 @@ func octo_slam(center: Vector3, radius: float, dmg: float) -> int:
 var bot_mode := "fighters"
 var bot_nation := "earth"      # the nation of the bots in "benders" mode
 var duel_nation := "auto"      # auto = the opposite of the player's nation, or "air" / "earth" / "water"
+var duel_difficulty := "hard"  # "normal" (player parity) or "hard" (the original boss); see C.DUEL_DIFFICULTIES
+var _duel_tune: Dictionary = C.DUEL_HARD
 var _default_bots: Array = []
 var _base_spawn := Vector3.ZERO
 var duel_round_over := false
@@ -2204,8 +2206,9 @@ func set_bot_mode(mode: String, player_element := "air", at := Vector3.ZERO, yaw
 		d.boss = true
 		d.nation = duel_nation if duel_nation != "auto" else ("air" if player_element == "earth" else "earth")
 		d.air_user = d.nation == "air"
-		d.max_hp = 450.0
-		d.hp = 450.0
+		_duel_tune = C.DUEL_DIFFICULTIES.get(duel_difficulty, C.DUEL_HARD)
+		d.max_hp = float(_duel_tune["hp"])
+		d.hp = d.max_hp
 		d.fire_cd = 99999.0
 		bots.append(d)
 		return

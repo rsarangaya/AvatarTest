@@ -558,8 +558,8 @@ static func _water_duelist(w, b, pl, dist: float) -> void:
 		w.events.append({"type": "bot_octo", "pos": b.pos + Vector3(0.0, 1.0, 0.0), "bot": b})
 		return
 	if b.hp < b.max_hp * 0.5 and _cd(b, "heal") <= 0.0:
-		b.hp = minf(b.max_hp, b.hp + 80.0)
-		_set_cd(b, "heal", 14.0)
+		b.hp = minf(b.max_hp, b.hp + float(w._duel_tune["heal_amount"]))
+		_set_cd(b, "heal", float(w._duel_tune["heal_cd"]))
 		_cast(w, b, "raise")
 		w.events.append({"type": "bot_heal", "pos": b.pos + Vector3(0.0, 0.9, 0.0)})
 		return

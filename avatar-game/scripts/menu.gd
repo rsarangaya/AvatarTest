@@ -275,6 +275,8 @@ func _nation_screen(title: String, hint: String, allow_auto: bool, on_confirm: C
 		left.add_child(ab)
 		buttons["auto"] = ab
 	view.show_text("[color=#aab]Select a nation on the left to see its moves.[/color]")
+	if allow_auto:                                   # the duel setup also picks the difficulty
+		v.add_child(_difficulty_row())
 	var bottom := HBoxContainer.new()
 	bottom.add_theme_constant_override("separation", 20)
 	bottom.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -286,6 +288,43 @@ func _nation_screen(title: String, hint: String, allow_auto: bool, on_confirm: C
 		confirm.pressed.connect(func(): on_confirm.call(chosen[0]))
 		bottom.add_child(confirm)
 	return v
+
+
+const DIFFICULTY_INFO := {
+	"normal": "NORMAL: the enemy has your health, healing and ultimate meter. A fair fight.",
+	"hard": "HARD: the enemy has 4.5x your health and a stronger heal and ultimate.",
+}
+var diff_buttons := {}
+var diff_desc: Label
+
+
+# Normal / Hard buttons with a one-line description of the picked level. The choice is saved at once.
+func _difficulty_row() -> Control:
+	var col := _col(6)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 20)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	col.add_child(row)
+	row.add_child(UI.label("DIFFICULTY", 18, UI.DIM))
+	diff_buttons = {}
+	for id in ["normal", "hard"]:
+		var b := UI.button(String(id).capitalize(), Vector2(160.0, 44.0))
+		b.pressed.connect(set_difficulty.bind(String(id)))
+		row.add_child(b)
+		diff_buttons[id] = b
+	diff_desc = UI.label("", 15, UI.DIM)
+	diff_desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(diff_desc)
+	set_difficulty(Settings.duel_difficulty)
+	return col
+
+
+func set_difficulty(id: String) -> void:
+	Settings.duel_difficulty = id if id == "hard" else "normal"
+	Settings.save()
+	for k in diff_buttons.keys():
+		UI.set_selected(diff_buttons[k], String(k) == Settings.duel_difficulty)
+	diff_desc.text = String(DIFFICULTY_INFO[Settings.duel_difficulty])
 
 
 # ------------------------------------------------------------------ start

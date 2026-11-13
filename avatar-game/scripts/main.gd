@@ -480,6 +480,7 @@ func _build_pause_menu(root: Control) -> void:
 func _apply_session() -> void:
 	sim.set_nation(Session.player_nation)
 	world.duel_nation = Session.enemy_nation
+	world.duel_difficulty = Settings.duel_difficulty
 	world.bot_nation = Session.bot_nation
 	world.set_bot_mode(Session.world_mode(), sim.element, sim.pos, sim.yaw)
 	sim.respawn()                              # a full pouch or chi bar, and your side of the map in a duel

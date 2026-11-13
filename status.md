@@ -161,6 +161,8 @@ All suites passed on the final run (2026-11-12, fire round): fire_test, water_te
 - The player cannot be frozen by a water enemy yet (firebender bots already thaw in 0.5 s).
 - The ice shard spike looks like small diamonds from behind; check it from the side in play.
 
+- Duel difficulty (Normal default / Hard): chosen on the CHOOSE YOUR ENEMY screen, saved in settings. Hard = the old boss (450 hp, water heal +80 per 14 s, ult fills per 160 damage dealt). Normal = player parity (100 hp, heal 28 per 2.6 s, ult per 500 damage). Table: C.DUEL_NORMAL / C.DUEL_HARD. Grunt bots unaffected. Test: tests/difficulty_test.gd.
+
 ## Plan / ideas
 - Player freeze (so the water enemy can use the E freeze on you).
 - Optional: tune the pouch costs once you have played it.

@@ -42,6 +42,7 @@ static var bindings := {}
 static var mouse_sens := 1.0            # multiplier on BASE_SENS
 static var fov := BASE_FOV
 static var quality := 1                 # graphics: 0 low, 1 medium, 2 high (see profile())
+static var duel_difficulty := "normal"  # duel enemy: "normal" (player parity) or "hard" (see C.DUEL_DIFFICULTIES)
 static var debug_enabled := false
 static var persist := true              # tests turn this off so they never touch the player's saved settings
 static var _loaded := false
@@ -75,6 +76,8 @@ static func ensure_loaded() -> void:
 	mouse_sens = clampf(float(cf.get_value("mouse", "sensitivity", 1.0)), 0.2, 3.0)
 	fov = clampf(float(cf.get_value("view", "fov", BASE_FOV)), 70.0, 110.0)
 	quality = clampi(int(cf.get_value("view", "quality", 1)), 0, 2)
+	var dd := String(cf.get_value("duel", "difficulty", "normal"))
+	duel_difficulty = dd if dd == "hard" else "normal"
 
 
 # Two actions must never share a key (an old saved file can clash with an action added later). The later action goes
@@ -102,6 +105,7 @@ static func save() -> void:
 	cf.set_value("mouse", "sensitivity", mouse_sens)
 	cf.set_value("view", "fov", fov)
 	cf.set_value("view", "quality", quality)
+	cf.set_value("duel", "difficulty", duel_difficulty)
 	cf.save(SAVE_PATH)
 
 
@@ -111,6 +115,7 @@ static func reset_defaults() -> void:
 	mouse_sens = 1.0
 	fov = BASE_FOV
 	quality = 1
+	duel_difficulty = "normal"
 	save()
 
 

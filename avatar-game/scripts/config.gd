@@ -160,6 +160,13 @@ const ULT_MAX := 100.0
 const ULT_PER_DAMAGE := 0.2              # per point of damage you deal: about 500 damage fills the meter (no free charging)
 const BOT_ULT_DAMAGE := 160.0            # damage the duel enemy must deal to you for a full ultimate
 
+# ---- Duel difficulty: the duelist's edges over the player. Hard = the original boss numbers; Normal = player parity.
+# hp: duelist health. heal_amount / heal_cd: the water duelist's heal. ult_damage: damage it must deal to fill its ultimate.
+# (Its per-move damage is already at or below the player's version of each move, so it is the same on both levels.)
+const DUEL_HARD := {"hp": 450.0, "heal_amount": 80.0, "heal_cd": 14.0, "ult_damage": BOT_ULT_DAMAGE}
+const DUEL_NORMAL := {"hp": PLAYER_HP, "heal_amount": HEAL_AMOUNT, "heal_cd": HEAL_COOLDOWN, "ult_damage": ULT_MAX / ULT_PER_DAMAGE}
+const DUEL_DIFFICULTIES := {"normal": DUEL_NORMAL, "hard": DUEL_HARD}
+
 # Air Breath: a huge, channelled stream of pure air
 const BREATH_DURATION := 2.4
 const BREATH_RANGE := 34.0
